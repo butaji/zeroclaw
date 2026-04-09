@@ -1,4 +1,4 @@
-use crate::channels::traits::{Channel, ChannelMessage, SendMessage};
+use zeroclaw_api::channel::{Channel, ChannelMessage, SendMessage};
 use async_trait::async_trait;
 use matrix_sdk::{
     Client as MatrixSdkClient, LoopCtrl, Room, RoomState, SessionMeta, SessionTokens,

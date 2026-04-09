@@ -1,4 +1,3 @@
-//! Memory subsystem — re-exported from `zeroclaw-memory`.
 
 pub use zeroclaw_memory::*;
 

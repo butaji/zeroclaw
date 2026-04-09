@@ -5,7 +5,6 @@ use crate::traits::{ChannelConfig, HasPropKind, PropKind};
 use anyhow::{Context, Result};
 use directories::UserDirs;
 #[cfg(feature = "schema-export")]
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -8533,8 +8532,9 @@ impl ChannelConfig for BlueskyConfig {
 /// then captures the following utterance and transcribes it via the
 /// existing transcription API.
 #[cfg(feature = "voice-wake")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, zeroclaw_macros::Configurable)]
 #[cfg_attr(feature = "schema-export", derive(schemars::JsonSchema))]
+#[prefix = "voice-wake"]
 pub struct VoiceWakeConfig {
     /// Wake word phrase to listen for (case-insensitive substring match).
     /// Default: `"hey zeroclaw"`.

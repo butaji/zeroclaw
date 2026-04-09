@@ -92,6 +92,12 @@ landlock = { version = "0.4", optional = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Optional deps for specific features
+matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown", "sqlite"] }
+nostr-sdk = { version = "0.44", default-features = false, features = ["nip04", "nip59"], optional = true }
+nusb = { version = "0.2", default-features = false, optional = true }
+tokio-serial = { version = "5", default-features = false, optional = true }
+
 [features]
 default = ["observability-prometheus", "skill-creation", "gateway", "tui-onboarding", "schema-export", "channel-email", "channel-lark", "channel-discord", "channel-slack", "channel-signal", "channel-mattermost", "channel-irc", "channel-imessage", "channel-dingtalk", "channel-qq", "channel-bluesky", "channel-twitter", "channel-reddit", "channel-notion", "channel-linq", "channel-wati", "channel-nextcloud", "channel-mochat", "channel-wecom", "channel-clawdtalk", "channel-webhook", "channel-acp-server", "channel-whatsapp-cloud", "channel-voice-call"]
 gateway = ["dep:axum", "dep:hyper", "dep:hyper-util", "dep:tower", "dep:tower-http", "dep:http-body-util", "dep:rust-embed", "dep:mime_guess"]
@@ -100,7 +106,7 @@ observability-prometheus = ["dep:prometheus"]
 observability-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
 peripheral-rpi = ["rppal"]
 sandbox-landlock = ["dep:landlock"]
-hardware = []
+hardware = ["dep:nusb", "dep:tokio-serial"]
 skill-creation = []
 schema-export = ["dep:schemars", "zeroclaw-config/schema-export"]
 
@@ -108,8 +114,8 @@ schema-export = ["dep:schemars", "zeroclaw-config/schema-export"]
 channel-email = ["zeroclaw-channels/channel-email"]
 channel-telegram = ["zeroclaw-channels/channel-telegram"]
 channel-lark = ["zeroclaw-channels/channel-lark"]
-channel-nostr = ["zeroclaw-channels/channel-nostr"]
-channel-matrix = []
+channel-nostr = ["zeroclaw-channels/channel-nostr", "dep:nostr-sdk"]
+channel-matrix = ["dep:matrix-sdk"]
 channel-discord = ["zeroclaw-channels/channel-discord"]
 channel-slack = ["zeroclaw-channels/channel-slack"]
 channel-signal = ["zeroclaw-channels/channel-signal"]

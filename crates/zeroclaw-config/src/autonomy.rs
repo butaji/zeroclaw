@@ -1,5 +1,4 @@
 #[cfg(feature = "schema-export")]
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// How much autonomy the agent has

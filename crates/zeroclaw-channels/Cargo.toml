@@ -55,6 +55,12 @@ wa-rs-binary = { version = "0.2", optional = true, default-features = false }
 wa-rs-proto = { version = "0.2", optional = true, default-features = false }
 serde-big-array = { version = "0.5", optional = true }
 
+cpal = { version = "0.15", optional = true }
+wa-rs-ureq-http = { version = "0.2", optional = true }
+wa-rs-tokio-transport = { version = "0.2", optional = true, default-features = false }
+qrcode = { version = "0.14", optional = true }
+shellexpand = "3.1"
+
 [features]
 default = [
     "channel-discord", "channel-slack", "channel-signal", "channel-mattermost",
@@ -69,7 +75,7 @@ channel-email = ["dep:lettre", "dep:mail-parser", "dep:async-imap"]
 channel-telegram = ["dep:image"]
 channel-lark = ["dep:prost"]
 channel-nostr = ["dep:nostr-sdk"]
-whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:serde-big-array"]
+whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:serde-big-array", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:qrcode"]
 # Channels with no optional deps (cfg gate only)
 channel-discord = []
 channel-slack = []
@@ -92,8 +98,10 @@ channel-clawdtalk = []
 channel-webhook = []
 channel-whatsapp-cloud = []
 channel-voice-call = []
-voice-wake = []
+voice-wake = ["dep:cpal"]
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 tempfile = "3.26"
+
+

@@ -3,7 +3,6 @@
 
 use crate::traits::{ChannelConfig, HasPropKind, PropKind};
 #[cfg(feature = "schema-export")]
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use zeroclaw_macros::Configurable;

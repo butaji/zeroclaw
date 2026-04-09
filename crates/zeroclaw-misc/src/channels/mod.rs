@@ -17,6 +17,7 @@
 pub mod acp_server;
 pub mod cli;
 #[cfg(feature = "channel-matrix")]
+#[cfg(feature = "channel-matrix")]
 pub mod matrix;
 pub mod media_pipeline;
 pub mod mqtt;
@@ -61,6 +62,8 @@ pub use zeroclaw_channels::whatsapp::WhatsAppChannel;
 // Local channel types (in misc, not zeroclaw-channels)
 pub use cli::CliChannel;
 pub use telegram::TelegramChannel;
+#[cfg(feature = "channel-matrix")]
+pub use matrix::MatrixChannel;
 pub use zeroclaw_channels::link_enricher;
 #[cfg(feature = "whatsapp-web")]
 pub use zeroclaw_channels::whatsapp_web::WhatsAppWebChannel;
