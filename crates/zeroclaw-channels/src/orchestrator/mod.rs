@@ -11489,6 +11489,7 @@ This is an example JSON object for profile settings."#;
         );
     }
 
+    #[cfg(feature = "channel-telegram")]
     #[test]
     fn build_channel_by_id_unconfigured_telegram_returns_error() {
         let config = Config::default();
@@ -11504,6 +11505,7 @@ This is an example JSON object for profile settings."#;
         }
     }
 
+    #[cfg(feature = "channel-telegram")]
     #[test]
     fn build_channel_by_id_configured_telegram_succeeds() {
         let mut config = Config::default();
