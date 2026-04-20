@@ -1192,8 +1192,8 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         }
 
         let url = format!(
-            "https://api.telegram.org/file/bot{}/{file_path}",
-            self.bot_token
+            "{}/file/bot{}/{file_path}",
+            self.api_base, self.bot_token
         );
         let resp = self
             .http_client()
@@ -1932,15 +1932,10 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             .ok_or_else(|| anyhow::anyhow!("getFile: no file_path in response"))?
             .to_string();
 
-        // Step 2: download the actual file
-        let download_url = format!(
-            "https://api.telegram.org/file/bot{}/{}",
-            self.bot_token, file_path
-        );
-        let img_resp = self.http_client().get(&download_url).send().await?;
-        let bytes = img_resp.bytes().await?;
+        // Step 2: download via download_file (handles local Bot API paths)
+        let bytes = self.download_file(&file_path).await?;
 
-        // Step 3: resize to max 1024px on longest side to fit within model context
+        // Step 3: resize to max 512px on longest side to keep data-URI compact
         let resized_bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
             let img = image::load_from_memory(&bytes)?;
             let (w, h) = (img.width(), img.height());
