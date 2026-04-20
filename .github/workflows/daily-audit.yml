@@ -78,6 +78,28 @@ jobs:
             --label "security" \
             --label "risk: high" \
             --body-file /tmp/issue-body.md
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "ci: Advisory scan failed — $(date -u +%Y-%m-%d)" \
+            --label "security" \
+            --label "risk: high" \
+<<<<<<< HEAD
+            --body-file /tmp/issue-body.md
+=======
+            --body "## Advisory scan failed
+
+Workflow run: ${RUN_URL}
+
+\`\`\`
+${advisory_output}
+\`\`\`
+
+Review \`deny.toml\` for the current ignore list. If this advisory is a known
+acceptable risk, add an entry with a \`reason\` field. If it requires a
+dependency update, open a tracking issue and link it here.
+
+cc @JordanTheJet @theonlyhennygod"
+>>>>>>> 8ec61f77 (ci: add daily advisory scan workflow (#5928))
 
       - name: Propagate scan failure
         if: steps.scan.outcome == 'failure'
