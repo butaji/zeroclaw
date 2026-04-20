@@ -2136,7 +2136,11 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         chat_id: &str,
         thread_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        let chunks = split_message_for_telegram(message);
+        // Convert markdown to HTML first, then split. This prevents
+        // formatting from breaking across chunk boundaries and ensures
+        // the 4096-char limit is measured against the rendered HTML.
+        let html = Self::markdown_to_telegram_html(message);
+        let chunks = split_message_for_telegram(&html);
 
         for (index, chunk) in chunks.iter().enumerate() {
             let text = if chunks.len() > 1 {
@@ -2151,36 +2155,36 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 chunk.to_string()
             };
 
-            let mut markdown_body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "chat_id": chat_id,
-                "text": Self::markdown_to_telegram_html(&text),
+                "text": text,
                 "parse_mode": "HTML"
             });
 
             // Add message_thread_id for forum topic support
             if let Some(tid) = thread_id {
-                markdown_body["message_thread_id"] = serde_json::Value::String(tid.to_string());
+                body["message_thread_id"] = serde_json::Value::String(tid.to_string());
             }
 
-            let markdown_resp = self
+            let html_resp = self
                 .http_client()
                 .post(self.api_url("sendMessage"))
-                .json(&markdown_body)
+                .json(&body)
                 .send()
                 .await?;
 
-            if markdown_resp.status().is_success() {
+            if html_resp.status().is_success() {
                 if index < chunks.len() - 1 {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
                 continue;
             }
 
-            let markdown_status = markdown_resp.status();
-            let markdown_err = markdown_resp.text().await.unwrap_or_default();
+            let html_status = html_resp.status();
+            let html_err = html_resp.text().await.unwrap_or_default();
             tracing::warn!(
-                status = ?markdown_status,
-                "Telegram sendMessage with Markdown failed; retrying without parse_mode"
+                status = ?html_status,
+                "Telegram sendMessage with HTML failed; retrying without parse_mode"
             );
 
             let mut plain_body = serde_json::json!({
@@ -2203,9 +2207,9 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 let plain_status = plain_resp.status();
                 let plain_err = plain_resp.text().await.unwrap_or_default();
                 anyhow::bail!(
-                    "Telegram sendMessage failed (markdown {}: {}; plain {}: {})",
-                    markdown_status,
-                    markdown_err,
+                    "Telegram sendMessage failed (HTML {}: {}; plain {}: {})",
+                    html_status,
+                    html_err,
                     plain_status,
                     plain_err
                 );
