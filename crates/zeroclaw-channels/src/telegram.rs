@@ -3317,7 +3317,7 @@ impl Channel for TelegramChannel {
             let probe = serde_json::json!({
                 "offset": offset,
                 "timeout": 0,
-                "allowed_updates": ["message", "edited_message", "callback_query"]
+                "allowed_updates": ["message", "edited_message", "channel_post", "edited_channel_post", "callback_query"]
             });
             match self.http_client().post(&url).json(&probe).send().await {
                 Err(e) => {
@@ -3392,7 +3392,7 @@ impl Channel for TelegramChannel {
             let body = serde_json::json!({
                 "offset": offset,
                 "timeout": 30,
-                "allowed_updates": ["message", "edited_message", "callback_query"]
+                "allowed_updates": ["message", "edited_message", "channel_post", "edited_channel_post", "callback_query"]
             });
 
             let resp = match self.http_client().post(&url).json(&body).send().await {
@@ -3530,20 +3530,31 @@ Ensure only one `zeroclaw` process is using this bot token."
                         continue; // callback_query is not a regular message
                     }
 
-                    // Normalize edited_message into message so downstream
-                    // parsing treats edits like any other message.
+                    // Normalize edited_message, channel_post, edited_channel_post
+                    // into message so downstream parsing handles them uniformly.
                     let normalized;
-                    let update: &serde_json::Value = if update.get("edited_message").is_some()
-                        && update.get("message").is_none()
-                    {
-                        normalized = {
-                            let mut n = update.clone();
-                            if let Some(msg) = n.get("edited_message").cloned() {
-                                n["message"] = msg;
-                            }
-                            n
+                    let update: &serde_json::Value = if update.get("message").is_none() {
+                        let source = if update.get("edited_message").is_some() {
+                            "edited_message"
+                        } else if update.get("channel_post").is_some() {
+                            "channel_post"
+                        } else if update.get("edited_channel_post").is_some() {
+                            "edited_channel_post"
+                        } else {
+                            ""
                         };
-                        &normalized
+                        if !source.is_empty() {
+                            normalized = {
+                                let mut n = update.clone();
+                                if let Some(msg) = n.get(source).cloned() {
+                                    n["message"] = msg;
+                                }
+                                n
+                            };
+                            &normalized
+                        } else {
+                            update
+                        }
                     } else {
                         update
                     };
