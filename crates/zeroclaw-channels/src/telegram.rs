@@ -1624,6 +1624,29 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
     /// Extract sender username and display identity from a Telegram message object.
     fn extract_sender_info(message: &serde_json::Value) -> (String, Option<String>, String) {
+        // Prefer sender_chat for anonymous admin / channel-sent messages.
+        // When present, from contains a fake user; sender_chat is the real source.
+        if let Some(chat) = message.get("sender_chat") {
+            let chat_username = chat
+                .get("username")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            let chat_id = chat
+                .get("id")
+                .and_then(serde_json::Value::as_i64)
+                .map(|id| id.to_string());
+            let display = chat_username
+                .as_deref()
+                .or(chat_id.as_deref())
+                .unwrap_or("unknown")
+                .to_string();
+            return (
+                chat_username.unwrap_or_else(|| "unknown".to_string()),
+                chat_id,
+                display,
+            );
+        }
+
         let username = message
             .get("from")
             .and_then(|from| from.get("username"))
@@ -5161,6 +5184,41 @@ mod tests {
         assert_eq!(username, "unknown");
         assert_eq!(sender_id, Some("42".to_string()));
         assert_eq!(identity, "42");
+    }
+
+    #[test]
+    fn extract_sender_info_prefers_sender_chat_over_from() {
+        // Anonymous admin: sender_chat is the real source, from is a fake user
+        let msg = serde_json::json!({
+            "sender_chat": {
+                "id": -1001234567890i64,
+                "username": "mygroup",
+                "type": "supergroup"
+            },
+            "from": {
+                "id": 42,
+                "username": "GroupAnonymousBot",
+                "is_bot": true
+            }
+        });
+        let (username, sender_id, identity) = TelegramChannel::extract_sender_info(&msg);
+        assert_eq!(username, "mygroup");
+        assert_eq!(sender_id, Some("-1001234567890".to_string()));
+        assert_eq!(identity, "mygroup");
+    }
+
+    #[test]
+    fn extract_sender_info_sender_chat_without_username() {
+        let msg = serde_json::json!({
+            "sender_chat": {
+                "id": -100999,
+                "type": "group"
+            }
+        });
+        let (username, sender_id, identity) = TelegramChannel::extract_sender_info(&msg);
+        assert_eq!(username, "unknown");
+        assert_eq!(sender_id, Some("-100999".to_string()));
+        assert_eq!(identity, "-100999");
     }
 
     // ─────────────────────────────────────────────────────────────────────
