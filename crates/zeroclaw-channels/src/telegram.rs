@@ -1183,6 +1183,14 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
     /// Download a file from the Telegram CDN.
     async fn download_file(&self, file_path: &str) -> anyhow::Result<Vec<u8>> {
+        // Local Bot API servers return absolute paths — read directly.
+        if file_path.starts_with('/') {
+            let data = tokio::fs::read(file_path)
+                .await
+                .with_context(|| format!("Failed to read local Bot API file: {file_path}"))?;
+            return Ok(data);
+        }
+
         let url = format!(
             "https://api.telegram.org/file/bot{}/{file_path}",
             self.bot_token
