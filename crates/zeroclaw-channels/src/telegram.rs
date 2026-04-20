@@ -1853,10 +1853,57 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         None
     }
 
+    /// Convert structured message types (location, contact, venue) to text
+    /// so they don't get silently dropped when `text` is absent.
+    fn synthesize_structured_content(message: &serde_json::Value) -> Option<String> {
+        if let Some(loc) = message.get("location") {
+            let lat = loc.get("latitude").and_then(serde_json::Value::as_f64)?;
+            let lon = loc.get("longitude").and_then(serde_json::Value::as_f64)?;
+            return Some(format!("[Location: {lat}, {lon}]"));
+        }
+        if let Some(contact) = message.get("contact") {
+            let name = contact
+                .get("first_name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Unknown");
+            let phone = contact
+                .get("phone_number")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("no number");
+            let mut parts = format!("[Contact: {name}, {phone}");
+            if let Some(last) = contact.get("last_name").and_then(serde_json::Value::as_str) {
+                parts = format!("[Contact: {name} {last}, {phone}");
+            }
+            parts.push(']');
+            return Some(parts);
+        }
+        if let Some(venue) = message.get("venue") {
+            let title = venue
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Unknown venue");
+            let address = venue
+                .get("address")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if let Some(loc) = venue.get("location") {
+                let lat = loc.get("latitude").and_then(serde_json::Value::as_f64)?;
+                let lon = loc.get("longitude").and_then(serde_json::Value::as_f64)?;
+                return Some(format!("[Venue: {title}, {address} ({lat}, {lon})]"));
+            }
+            return Some(format!("[Venue: {title}, {address}]"));
+        }
+        None
+    }
+
     fn parse_update_message(&self, update: &serde_json::Value) -> Option<ChannelMessage> {
         let message = update.get("message")?;
 
-        let text = message.get("text").and_then(serde_json::Value::as_str)?;
+        let text = message
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from)
+            .or_else(|| Self::synthesize_structured_content(message))?;
 
         let (username, sender_id, sender_identity) = Self::extract_sender_info(message);
 
@@ -1874,7 +1921,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         if self.mention_only && is_group {
             let bot_username = self.bot_username.lock();
             if let Some(ref bot_username) = *bot_username {
-                has_bot_mention = Self::contains_bot_mention(text, bot_username);
+                has_bot_mention = Self::contains_bot_mention(&text, bot_username);
                 if !has_bot_mention && !Self::is_reply_to_bot_message(message, bot_username) {
                     return None;
                 }
@@ -1911,7 +1958,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             let bot_username = self.bot_username.lock();
             let bot_username = bot_username.as_ref()?;
             if has_bot_mention {
-                Self::normalize_incoming_content(text, bot_username)?
+                Self::normalize_incoming_content(&text, bot_username)?
             } else {
                 text.to_string()
             }
@@ -4049,6 +4096,71 @@ mod tests {
             infer_attachment_kind_from_target("https://example.com/files/specs.pdf?download=1"),
             Some(TelegramAttachmentKind::Document)
         );
+    }
+
+    #[test]
+    fn synthesize_structured_content_location() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], false);
+        let update = serde_json::json!({
+            "update_id": 1,
+            "message": {
+                "message_id": 10,
+                "location": { "latitude": 40.7128, "longitude": -74.0060 },
+                "from": { "id": 100, "username": "user" },
+                "chat": { "id": 100 }
+            }
+        });
+        let msg = ch.parse_update_message(&update).unwrap();
+        assert!(msg.content.contains("[Location: 40.7128, -74.006]"));
+    }
+
+    #[test]
+    fn synthesize_structured_content_contact() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], false);
+        let update = serde_json::json!({
+            "update_id": 2,
+            "message": {
+                "message_id": 11,
+                "contact": {
+                    "first_name": "John",
+                    "last_name": "Doe",
+                    "phone_number": "+1234567890"
+                },
+                "from": { "id": 100, "username": "user" },
+                "chat": { "id": 100 }
+            }
+        });
+        let msg = ch.parse_update_message(&update).unwrap();
+        assert!(msg.content.contains("[Contact: John Doe, +1234567890]"));
+    }
+
+    #[test]
+    fn synthesize_structured_content_venue() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], false);
+        let update = serde_json::json!({
+            "update_id": 3,
+            "message": {
+                "message_id": 12,
+                "venue": {
+                    "title": "Central Park",
+                    "address": "New York, NY",
+                    "location": { "latitude": 40.7829, "longitude": -73.9654 }
+                },
+                "from": { "id": 100, "username": "user" },
+                "chat": { "id": 100 }
+            }
+        });
+        let msg = ch.parse_update_message(&update).unwrap();
+        assert!(msg.content.contains("[Venue: Central Park, New York, NY"));
+        assert!(msg.content.contains("40.7829"));
+    }
+
+    #[test]
+    fn synthesize_structured_content_returns_none_for_unsupported() {
+        let msg = serde_json::json!({
+            "dice": { "emoji": "🎲", "value": 5 }
+        });
+        assert!(TelegramChannel::synthesize_structured_content(&msg).is_none());
     }
 
     #[test]
