@@ -172,7 +172,8 @@ fn build_telegram_ack_reaction_request(
         "reaction": [{
             "type": "emoji",
             "emoji": emoji
-        }]
+        }],
+        "is_big": true
     })
 }
 
@@ -3675,6 +3676,7 @@ mod tests {
         assert_eq!(body["message_id"], 42);
         assert_eq!(body["reaction"][0]["type"], "emoji");
         assert_eq!(body["reaction"][0]["emoji"], "⚡️");
+        assert_eq!(body["is_big"], true);
     }
 
     #[test]
