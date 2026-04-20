@@ -34,6 +34,8 @@ struct IncomingAttachment {
 enum IncomingAttachmentKind {
     Document,
     Photo,
+    Video,
+    Sticker,
 }
 const TELEGRAM_BIND_COMMAND: &str = "/bind";
 /// Telegram Bot API allows at most 100 commands via setMyCommands.
@@ -1273,6 +1275,59 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 file_size,
                 caption,
                 kind: IncomingAttachmentKind::Photo,
+            });
+        }
+
+        // Try video
+        if let Some(vid) = message.get("video") {
+            let file_id = vid.get("file_id")?.as_str()?.to_string();
+            let file_name = vid
+                .get("file_name")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            let file_size = vid.get("file_size").and_then(serde_json::Value::as_u64);
+            let caption = message
+                .get("caption")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            return Some(IncomingAttachment {
+                file_id,
+                file_name,
+                file_size,
+                caption,
+                kind: IncomingAttachmentKind::Video,
+            });
+        }
+
+        // Try video_note (round video — treat as video)
+        if let Some(vn) = message.get("video_note") {
+            let file_id = vn.get("file_id")?.as_str()?.to_string();
+            let file_size = vn.get("file_size").and_then(serde_json::Value::as_u64);
+            return Some(IncomingAttachment {
+                file_id,
+                file_name: None,
+                file_size,
+                caption: None, // video_note has no caption per API
+                kind: IncomingAttachmentKind::Video,
+            });
+        }
+
+        // Try sticker
+        if let Some(stk) = message.get("sticker") {
+            let file_id = stk.get("file_id")?.as_str()?.to_string();
+            let file_size = stk.get("file_size").and_then(serde_json::Value::as_u64);
+            let emoji = stk
+                .get("emoji")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            // Use emoji as pseudo-filename so downstream knows what it is
+            let file_name = emoji.or_else(|| Some("sticker.webp".to_string()));
+            return Some(IncomingAttachment {
+                file_id,
+                file_name,
+                file_size,
+                caption: None, // stickers have no caption per API
+                kind: IncomingAttachmentKind::Sticker,
             });
         }
 
@@ -5483,6 +5538,68 @@ mod tests {
             "photo": []
         });
         assert!(TelegramChannel::parse_attachment_metadata(&message).is_none());
+    }
+
+    #[test]
+    fn parse_attachment_metadata_detects_video() {
+        let message = serde_json::json!({
+            "video": {
+                "file_id": "vid_123",
+                "file_name": "clip.mp4",
+                "file_size": 1500000
+            },
+            "caption": "check this out"
+        });
+        let att = TelegramChannel::parse_attachment_metadata(&message).unwrap();
+        assert_eq!(att.file_id, "vid_123");
+        assert_eq!(att.file_name.as_deref(), Some("clip.mp4"));
+        assert_eq!(att.caption.as_deref(), Some("check this out"));
+        assert_eq!(att.kind, IncomingAttachmentKind::Video);
+    }
+
+    #[test]
+    fn parse_attachment_metadata_detects_video_note() {
+        let message = serde_json::json!({
+            "video_note": {
+                "file_id": "vn_456",
+                "length": 240,
+                "duration": 12,
+                "file_size": 800000
+            }
+        });
+        let att = TelegramChannel::parse_attachment_metadata(&message).unwrap();
+        assert_eq!(att.file_id, "vn_456");
+        assert!(att.caption.is_none());
+        assert_eq!(att.kind, IncomingAttachmentKind::Video);
+    }
+
+    #[test]
+    fn parse_attachment_metadata_detects_sticker() {
+        let message = serde_json::json!({
+            "sticker": {
+                "file_id": "stk_789",
+                "emoji": "😀",
+                "file_size": 45000
+            }
+        });
+        let att = TelegramChannel::parse_attachment_metadata(&message).unwrap();
+        assert_eq!(att.file_id, "stk_789");
+        assert_eq!(att.file_name.as_deref(), Some("😀"));
+        assert!(att.caption.is_none());
+        assert_eq!(att.kind, IncomingAttachmentKind::Sticker);
+    }
+
+    #[test]
+    fn parse_attachment_metadata_detects_sticker_without_emoji() {
+        let message = serde_json::json!({
+            "sticker": {
+                "file_id": "stk_noface"
+            }
+        });
+        let att = TelegramChannel::parse_attachment_metadata(&message).unwrap();
+        assert_eq!(att.file_id, "stk_noface");
+        assert_eq!(att.file_name.as_deref(), Some("sticker.webp"));
+        assert_eq!(att.kind, IncomingAttachmentKind::Sticker);
     }
 
     #[test]
