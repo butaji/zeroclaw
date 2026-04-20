@@ -2663,17 +2663,12 @@ impl Channel for TelegramChannel {
             }
         }
 
-        // Truncate to Telegram limit for mid-stream edits (UTF-8 safe)
-        let display_text = if text.len() > TELEGRAM_MAX_MESSAGE_LENGTH {
-            let mut end = 0;
-            for (idx, ch) in text.char_indices() {
-                let next = idx + ch.len_utf8();
-                if next > TELEGRAM_MAX_MESSAGE_LENGTH {
-                    break;
-                }
-                end = next;
-            }
-            &text[..end]
+        // Truncate to Telegram limit for mid-stream edits (char-safe)
+        let display_text = if text.chars().count() > TELEGRAM_MAX_MESSAGE_LENGTH {
+            &text[..text
+                .char_indices()
+                .nth(TELEGRAM_MAX_MESSAGE_LENGTH)
+                .map_or(text.len(), |(idx, _)| idx)]
         } else {
             text
         };
@@ -2768,7 +2763,7 @@ impl Channel for TelegramChannel {
         }
 
         // If text exceeds limit, delete draft and send as chunked messages
-        if text.len() > TELEGRAM_MAX_MESSAGE_LENGTH {
+        if text.chars().count() > TELEGRAM_MAX_MESSAGE_LENGTH {
             if let Some(id) = msg_id {
                 let _ = self
                     .client
@@ -3562,6 +3557,18 @@ mod tests {
         let result = ch
             .update_draft("123", "not-a-number", &long_emoji_text)
             .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn update_draft_cjk_not_truncated_by_byte_count() {
+        // CJK characters are 3 bytes each in UTF-8. 2000 chars = 6000 bytes,
+        // well over 4096 bytes but under 4096 chars — must NOT be truncated.
+        let ch = TelegramChannel::new("fake-token".into(), vec!["*".into()], false)
+            .with_streaming(StreamMode::Partial, 0);
+        let cjk_text = "漢".repeat(2000); // 2000 chars, 6000 bytes
+
+        let result = ch.update_draft("123", "not-a-number", &cjk_text).await;
         assert!(result.is_ok());
     }
 
