@@ -1671,15 +1671,54 @@ Allowlist Telegram username (without '@') or numeric user ID.",
     /// Returns `Some("[Forwarded from ...] ")` when the message is forwarded,
     /// `None` otherwise.
     fn format_forward_attribution(message: &serde_json::Value) -> Option<String> {
+        // API 7.x+: forward_origin is the modern replacement for
+        // forward_from, forward_from_chat, forward_sender_name.
+        if let Some(origin) = message.get("forward_origin") {
+            let origin_type = origin
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            return match origin_type {
+                "user" => {
+                    let label = origin
+                        .get("sender_user")
+                        .and_then(|u| u.get("username"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(|u| format!("@{u}"))
+                        .or_else(|| {
+                            origin
+                                .get("sender_user")
+                                .and_then(|u| u.get("first_name"))
+                                .and_then(serde_json::Value::as_str)
+                                .map(String::from)
+                        })
+                        .unwrap_or_else(|| "unknown".to_string());
+                    Some(format!("[Forwarded from {label}] "))
+                }
+                "hidden_user" => origin
+                    .get("sender_user_name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|name| format!("[Forwarded from {name}] ")),
+                "chat" => {
+                    let title = origin
+                        .get("sender_chat")
+                        .and_then(|c| c.get("title"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown channel");
+                    Some(format!("[Forwarded from channel: {title}] "))
+                }
+                _ => None,
+            };
+        }
+
+        // Legacy fallback for older Bot API versions
         if let Some(from_chat) = message.get("forward_from_chat") {
-            // Forwarded from a channel or group
             let title = from_chat
                 .get("title")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("unknown channel");
             Some(format!("[Forwarded from channel: {title}] "))
         } else if let Some(from_user) = message.get("forward_from") {
-            // Forwarded from a user (privacy allows identity)
             let label = from_user
                 .get("username")
                 .and_then(serde_json::Value::as_str)
@@ -1693,7 +1732,6 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 .unwrap_or_else(|| "unknown".to_string());
             Some(format!("[Forwarded from {label}] "))
         } else {
-            // Forwarded from a user who hides their identity
             message
                 .get("forward_sender_name")
                 .and_then(serde_json::Value::as_str)
@@ -6378,6 +6416,63 @@ mod tests {
             .with_tool_command_specs(specs);
 
         ch.register_bot_commands().await;
+
+        // ── forward_origin tests (API 7.x+) ───────────────────────
+
+        #[test]
+        fn format_forward_attribution_origin_user() {
+            let message = serde_json::json!({
+                "forward_origin": {
+                    "type": "user",
+                    "sender_user": { "id": 42, "username": "alice" }
+                },
+                "forward_date": 1_700_000_000
+            });
+            let attr = TelegramChannel::format_forward_attribution(&message).unwrap();
+            assert_eq!(attr, "[Forwarded from @alice] ");
+        }
+
+        #[test]
+        fn format_forward_attribution_origin_hidden_user() {
+            let message = serde_json::json!({
+                "forward_origin": {
+                    "type": "hidden_user",
+                    "sender_user_name": "Secret Agent"
+                },
+                "forward_date": 1_700_000_000
+            });
+            let attr = TelegramChannel::format_forward_attribution(&message).unwrap();
+            assert_eq!(attr, "[Forwarded from Secret Agent] ");
+        }
+
+        #[test]
+        fn format_forward_attribution_origin_chat() {
+            let message = serde_json::json!({
+                "forward_origin": {
+                    "type": "chat",
+                    "sender_chat": { "id": -100, "title": "News Channel", "type": "channel" }
+                },
+                "forward_date": 1_700_000_000
+            });
+            let attr = TelegramChannel::format_forward_attribution(&message).unwrap();
+            assert_eq!(attr, "[Forwarded from channel: News Channel] ");
+        }
+
+        #[test]
+        fn format_forward_attribution_origin_preferred_over_legacy() {
+            // When both forward_origin (modern) and forward_from (legacy) exist,
+            // forward_origin takes precedence.
+            let message = serde_json::json!({
+                "forward_origin": {
+                    "type": "user",
+                    "sender_user": { "id": 42, "username": "modern_alice" }
+                },
+                "forward_from": { "id": 99, "username": "legacy_bob" },
+                "forward_date": 1_700_000_000
+            });
+            let attr = TelegramChannel::format_forward_attribution(&message).unwrap();
+            assert_eq!(attr, "[Forwarded from @modern_alice] ");
+        }
     }
 
     // ── Approval inline keyboard tests ────────────────────────
