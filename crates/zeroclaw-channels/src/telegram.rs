@@ -35,6 +35,7 @@ enum IncomingAttachmentKind {
     Document,
     Photo,
     Video,
+    Audio,
     Sticker,
 }
 const TELEGRAM_BIND_COMMAND: &str = "/bind";
@@ -234,6 +235,9 @@ fn format_attachment_content(
             if is_image_extension(local_path) =>
         {
             format!("[IMAGE:{}]", local_path.display())
+        }
+        IncomingAttachmentKind::Audio => {
+            format!("[Audio: {}] {}", local_filename, local_path.display())
         }
         _ => {
             format!("[Document: {}] {}", local_filename, local_path.display())
@@ -1210,9 +1214,9 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         Ok(resp.bytes().await?.to_vec())
     }
 
-    /// Extract (file_id, duration) from a voice or audio message.
+    /// Extract (file_id, duration) from a voice message.
     fn parse_voice_metadata(message: &serde_json::Value) -> Option<(String, u64)> {
-        let voice = message.get("voice").or_else(|| message.get("audio"))?;
+        let voice = message.get("voice")?;
         let file_id = voice.get("file_id")?.as_str()?.to_string();
         let duration = voice
             .get("duration")
@@ -1318,6 +1322,38 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 file_size,
                 caption: None, // video_note has no caption per API
                 kind: IncomingAttachmentKind::Video,
+            });
+        }
+
+        // Try audio (music files — distinct from voice notes)
+        if let Some(aud) = message.get("audio") {
+            let file_id = aud.get("file_id")?.as_str()?.to_string();
+            let file_name = aud
+                .get("file_name")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from)
+                .or_else(|| {
+                    // Build a name from performer/title if available
+                    let performer = aud.get("performer").and_then(serde_json::Value::as_str);
+                    let title = aud.get("title").and_then(serde_json::Value::as_str);
+                    match (performer, title) {
+                        (Some(p), Some(t)) => Some(format!("{p} - {t}.mp3")),
+                        (Some(p), None) => Some(format!("{p}.mp3")),
+                        (None, Some(t)) => Some(format!("{t}.mp3")),
+                        (None, None) => Some("audio.mp3".to_string()),
+                    }
+                });
+            let file_size = aud.get("file_size").and_then(serde_json::Value::as_u64);
+            let caption = message
+                .get("caption")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            return Some(IncomingAttachment {
+                file_id,
+                file_name,
+                file_size,
+                caption,
+                kind: IncomingAttachmentKind::Audio,
             });
         }
 
@@ -5243,16 +5279,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_voice_metadata_extracts_audio() {
+    fn parse_voice_metadata_returns_none_for_audio() {
+        // audio messages should NOT be handled as voice — they go through attachments
         let msg = serde_json::json!({
             "audio": {
                 "file_id": "audio456",
                 "duration": 30
             }
         });
-        let (file_id, dur) = TelegramChannel::parse_voice_metadata(&msg).unwrap();
-        assert_eq!(file_id, "audio456");
-        assert_eq!(dur, 30);
+        assert!(TelegramChannel::parse_voice_metadata(&msg).is_none());
     }
 
     #[test]
@@ -5775,6 +5810,41 @@ mod tests {
     }
 
     #[test]
+    fn parse_attachment_metadata_detects_audio() {
+        let message = serde_json::json!({
+            "audio": {
+                "file_id": "aud_789",
+                "file_name": "song.mp3",
+                "file_size": 3000000,
+                "performer": "Artist",
+                "title": "Song",
+                "duration": 180
+            },
+            "caption": "check this out"
+        });
+        let att = TelegramChannel::parse_attachment_metadata(&message).unwrap();
+        assert_eq!(att.file_id, "aud_789");
+        assert_eq!(att.file_name.as_deref(), Some("song.mp3"));
+        assert_eq!(att.caption.as_deref(), Some("check this out"));
+        assert_eq!(att.kind, IncomingAttachmentKind::Audio);
+    }
+
+    #[test]
+    fn parse_attachment_metadata_detects_audio_without_filename() {
+        // Some audio messages have no file_name, only performer/title
+        let message = serde_json::json!({
+            "audio": {
+                "file_id": "aud_nofn",
+                "performer": "DJ Bot",
+                "title": "Mix",
+                "duration": 60
+            }
+        });
+        let att = TelegramChannel::parse_attachment_metadata(&message).unwrap();
+        assert_eq!(att.file_name.as_deref(), Some("DJ Bot - Mix.mp3"));
+    }
+
+    #[test]
     fn parse_attachment_metadata_detects_animation_with_document() {
         // Telegram sets both animation and document for GIFs.
         // The code must pick animation (the more specific type) over document.
@@ -5840,6 +5910,20 @@ mod tests {
 
         assert_eq!(content, "[Document: report.pdf] /tmp/workspace/report.pdf");
         assert!(!content.contains("[IMAGE:"));
+    }
+
+    /// Audio attachments use `[Audio: name] /path` format.
+    #[test]
+    fn attachment_audio_content_uses_audio_label() {
+        let local_path = std::path::Path::new("/tmp/workspace/song.mp3");
+        let local_filename = "song.mp3";
+
+        let content =
+            format_attachment_content(IncomingAttachmentKind::Audio, local_filename, local_path);
+
+        assert_eq!(content, "[Audio: song.mp3] /tmp/workspace/song.mp3");
+        assert!(!content.contains("[IMAGE:"));
+        assert!(!content.contains("[Document:"));
     }
 
     /// Markdown files must never produce `[IMAGE:]` markers (issue #1274).
