@@ -62,12 +62,8 @@ jobs:
 
           advisory_output=$(cat /tmp/advisory-output.txt)
 
-          gh issue create \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "ci: Advisory scan failed — $(date -u +%Y-%m-%d)" \
-            --label "security" \
-            --label "risk: high" \
-            --body "## Advisory scan failed
+          body=$(cat <<BODY
+## Advisory scan failed
 
 Workflow run: ${RUN_URL}
 
@@ -79,7 +75,16 @@ Review \`deny.toml\` for the current ignore list. If this advisory is a known
 acceptable risk, add an entry with a \`reason\` field. If it requires a
 dependency update, open a tracking issue and link it here.
 
-cc @JordanTheJet @theonlyhennygod"
+cc @JordanTheJet @theonlyhennygod
+BODY
+          )
+
+          gh issue create \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "ci: Advisory scan failed — $(date -u +%Y-%m-%d)" \
+            --label "security" \
+            --label "risk: high" \
+            --body "$body"
 
       - name: Propagate scan failure
         if: steps.scan.outcome == 'failure'
