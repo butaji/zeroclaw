@@ -1214,7 +1214,30 @@ Allowlist Telegram username (without '@') or numeric user ID.",
     ///
     /// Returns `None` for text-only, voice, and other unsupported message types.
     fn parse_attachment_metadata(message: &serde_json::Value) -> Option<IncomingAttachment> {
-        // Try document first
+        // Check animation before document: Telegram sets both fields for GIFs,
+        // and animation is the more specific type.
+        if message.get("animation").is_some() {
+            let anim = message.get("animation").unwrap();
+            let file_id = anim.get("file_id")?.as_str()?.to_string();
+            let file_name = anim
+                .get("file_name")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            let file_size = anim.get("file_size").and_then(serde_json::Value::as_u64);
+            let caption = message
+                .get("caption")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            return Some(IncomingAttachment {
+                file_id,
+                file_name,
+                file_size,
+                caption,
+                kind: IncomingAttachmentKind::Document,
+            });
+        }
+
+        // Try document
         if let Some(doc) = message.get("document") {
             let file_id = doc.get("file_id")?.as_str()?.to_string();
             let file_name = doc
@@ -5442,6 +5465,29 @@ mod tests {
             "photo": []
         });
         assert!(TelegramChannel::parse_attachment_metadata(&message).is_none());
+    }
+
+    #[test]
+    fn parse_attachment_metadata_detects_animation_with_document() {
+        // Telegram sets both animation and document for GIFs.
+        // The code must pick animation (the more specific type) over document.
+        let message = serde_json::json!({
+            "animation": {
+                "file_id": "anim_123",
+                "file_name": "cat.gif",
+                "file_size": 5000
+            },
+            "document": {
+                "file_id": "doc_456",
+                "file_name": "cat.gif",
+                "file_size": 5000
+            },
+            "caption": "funny cat"
+        });
+        let att = TelegramChannel::parse_attachment_metadata(&message).unwrap();
+        assert_eq!(att.file_id, "anim_123");
+        assert_eq!(att.file_name.as_deref(), Some("cat.gif"));
+        assert_eq!(att.caption.as_deref(), Some("funny cat"));
     }
 
     #[test]
