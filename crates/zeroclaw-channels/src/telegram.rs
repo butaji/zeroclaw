@@ -3486,10 +3486,14 @@ Ensure only one `zeroclaw` process is using this bot token."
                     }
 
                     // Send "typing" indicator immediately when we receive a message
-                    let typing_body = serde_json::json!({
-                        "chat_id": &msg.reply_target,
+                    let (chat_id, thread_id) = Self::parse_reply_target(&msg.reply_target);
+                    let mut typing_body = serde_json::json!({
+                        "chat_id": chat_id,
                         "action": "typing"
                     });
+                    if let Some(tid) = thread_id {
+                        typing_body["message_thread_id"] = serde_json::Value::String(tid);
+                    }
                     let _ = self
                         .http_client()
                         .post(self.api_url("sendChatAction"))
@@ -3531,14 +3535,17 @@ Ensure only one `zeroclaw` process is using this bot token."
 
         let client = self.http_client();
         let url = self.api_url("sendChatAction");
-        let chat_id = recipient.to_string();
+        let (chat_id, thread_id) = Self::parse_reply_target(recipient);
 
         let handle = tokio::spawn(async move {
             loop {
-                let body = serde_json::json!({
+                let mut body = serde_json::json!({
                     "chat_id": &chat_id,
                     "action": "typing"
                 });
+                if let Some(ref tid) = thread_id {
+                    body["message_thread_id"] = serde_json::Value::String(tid.clone());
+                }
                 let _ = client.post(&url).json(&body).send().await;
                 // Telegram typing indicator expires after 5s; refresh at 4s
                 tokio::time::sleep(Duration::from_secs(4)).await;
