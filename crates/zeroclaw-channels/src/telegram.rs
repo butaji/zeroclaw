@@ -2074,6 +2074,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         if let Some(cap) = caption {
             body["caption"] = serde_json::Value::String(cap.to_string());
+            body["parse_mode"] = serde_json::Value::String("HTML".to_string());
         }
 
         let resp = self
@@ -2205,6 +2206,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         if let Some(cap) = caption {
             form = form.text("caption", cap.to_string());
+            form = form.text("parse_mode", "HTML");
         }
 
         let resp = self
@@ -2244,6 +2246,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         if let Some(cap) = caption {
             form = form.text("caption", cap.to_string());
+            form = form.text("parse_mode", "HTML");
         }
 
         let resp = self
@@ -2288,6 +2291,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         if let Some(cap) = caption {
             form = form.text("caption", cap.to_string());
+            form = form.text("parse_mode", "HTML");
         }
 
         let resp = self
@@ -2327,6 +2331,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         if let Some(cap) = caption {
             form = form.text("caption", cap.to_string());
+            form = form.text("parse_mode", "HTML");
         }
 
         let resp = self
@@ -2371,6 +2376,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         if let Some(cap) = caption {
             form = form.text("caption", cap.to_string());
+            form = form.text("parse_mode", "HTML");
         }
 
         let resp = self
@@ -2415,6 +2421,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         if let Some(cap) = caption {
             form = form.text("caption", cap.to_string());
+            form = form.text("parse_mode", "HTML");
         }
 
         let resp = self
@@ -2459,6 +2466,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         if let Some(cap) = caption {
             form = form.text("caption", cap.to_string());
+            form = form.text("parse_mode", "HTML");
         }
 
         let resp = self
@@ -2496,6 +2504,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         if let Some(cap) = caption {
             body["caption"] = serde_json::Value::String(cap.to_string());
+            body["parse_mode"] = serde_json::Value::String("HTML".to_string());
         }
 
         let resp = self
@@ -2533,6 +2542,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
 
         if let Some(cap) = caption {
             body["caption"] = serde_json::Value::String(cap.to_string());
+            body["parse_mode"] = serde_json::Value::String("HTML".to_string());
         }
 
         let resp = self
