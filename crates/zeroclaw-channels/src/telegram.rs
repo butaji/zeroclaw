@@ -3063,7 +3063,7 @@ impl Channel for TelegramChannel {
             let probe = serde_json::json!({
                 "offset": offset,
                 "timeout": 0,
-                "allowed_updates": ["message", "callback_query"]
+                "allowed_updates": ["message", "edited_message", "callback_query"]
             });
             match self.http_client().post(&url).json(&probe).send().await {
                 Err(e) => {
@@ -3138,7 +3138,7 @@ impl Channel for TelegramChannel {
             let body = serde_json::json!({
                 "offset": offset,
                 "timeout": 30,
-                "allowed_updates": ["message", "callback_query"]
+                "allowed_updates": ["message", "edited_message", "callback_query"]
             });
 
             let resp = match self.http_client().post(&url).json(&body).send().await {
@@ -3275,6 +3275,24 @@ Ensure only one `zeroclaw` process is using this bot token."
 
                         continue; // callback_query is not a regular message
                     }
+
+                    // Normalize edited_message into message so downstream
+                    // parsing treats edits like any other message.
+                    let normalized;
+                    let update: &serde_json::Value = if update.get("edited_message").is_some()
+                        && update.get("message").is_none()
+                    {
+                        normalized = {
+                            let mut n = update.clone();
+                            if let Some(msg) = n.get("edited_message").cloned() {
+                                n["message"] = msg;
+                            }
+                            n
+                        };
+                        &normalized
+                    } else {
+                        update
+                    };
 
                     // Gate: when mention_only is active, skip group messages
                     // that neither @mention the bot nor reply to it. This
