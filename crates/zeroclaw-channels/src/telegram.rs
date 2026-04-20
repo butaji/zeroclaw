@@ -1740,58 +1740,72 @@ Allowlist Telegram username (without '@') or numeric user ID.",
     }
 
     /// Extract reply context from a Telegram `reply_to_message`, if present.
+    /// Falls back to `external_reply` for cross-chat replies.
     fn extract_reply_context(&self, message: &serde_json::Value) -> Option<String> {
-        let reply = message.get("reply_to_message")?;
+        if let Some(reply) = message.get("reply_to_message") {
+            let reply_sender = reply
+                .get("from")
+                .and_then(|from| from.get("username"))
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    reply
+                        .get("from")
+                        .and_then(|from| from.get("first_name"))
+                        .and_then(serde_json::Value::as_str)
+                })
+                .unwrap_or("unknown");
 
-        let reply_sender = reply
-            .get("from")
-            .and_then(|from| from.get("username"))
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| {
-                reply
-                    .get("from")
-                    .and_then(|from| from.get("first_name"))
-                    .and_then(serde_json::Value::as_str)
-            })
-            .unwrap_or("unknown");
+            let reply_text =
+                if let Some(text) = reply.get("text").and_then(serde_json::Value::as_str) {
+                    text.to_string()
+                } else if reply.get("voice").is_some() || reply.get("audio").is_some() {
+                    let reply_mid = reply.get("message_id").and_then(serde_json::Value::as_i64);
+                    let chat_id = message
+                        .get("chat")
+                        .and_then(|c| c.get("id"))
+                        .and_then(serde_json::Value::as_i64);
+                    if let (Some(mid), Some(cid)) = (reply_mid, chat_id) {
+                        self.voice_transcriptions
+                            .lock()
+                            .get(&format!("{cid}:{mid}"))
+                            .map(|t| format!("[Voice] {t}"))
+                            .unwrap_or_else(|| "[Voice message]".to_string())
+                    } else {
+                        "[Voice message]".to_string()
+                    }
+                } else if reply.get("photo").is_some() {
+                    "[Photo]".to_string()
+                } else if reply.get("document").is_some() {
+                    "[Document]".to_string()
+                } else if reply.get("video").is_some() {
+                    "[Video]".to_string()
+                } else if reply.get("sticker").is_some() {
+                    "[Sticker]".to_string()
+                } else {
+                    "[Message]".to_string()
+                };
 
-        let reply_text = if let Some(text) = reply.get("text").and_then(serde_json::Value::as_str) {
-            text.to_string()
-        } else if reply.get("voice").is_some() || reply.get("audio").is_some() {
-            let reply_mid = reply.get("message_id").and_then(serde_json::Value::as_i64);
-            let chat_id = message
-                .get("chat")
-                .and_then(|c| c.get("id"))
-                .and_then(serde_json::Value::as_i64);
-            if let (Some(mid), Some(cid)) = (reply_mid, chat_id) {
-                self.voice_transcriptions
-                    .lock()
-                    .get(&format!("{cid}:{mid}"))
-                    .map(|t| format!("[Voice] {t}"))
-                    .unwrap_or_else(|| "[Voice message]".to_string())
-            } else {
-                "[Voice message]".to_string()
-            }
-        } else if reply.get("photo").is_some() {
-            "[Photo]".to_string()
-        } else if reply.get("document").is_some() {
-            "[Document]".to_string()
-        } else if reply.get("video").is_some() {
-            "[Video]".to_string()
-        } else if reply.get("sticker").is_some() {
-            "[Sticker]".to_string()
-        } else {
-            "[Message]".to_string()
-        };
+            // Format as blockquote with sender attribution
+            let quoted_lines: String = reply_text
+                .lines()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
 
-        // Format as blockquote with sender attribution
-        let quoted_lines: String = reply_text
-            .lines()
-            .map(|line| format!("> {line}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+            return Some(format!("> @{reply_sender}:\n{quoted_lines}"));
+        }
 
-        Some(format!("> @{reply_sender}:\n{quoted_lines}"))
+        // Handle external replies (from different chats/topics)
+        if let Some(ext) = message.get("external_reply") {
+            let origin = ext
+                .get("origin")
+                .and_then(|o| o.get("title"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("external chat");
+            return Some(format!("[Replying to message from {origin}]"));
+        }
+
+        None
     }
 
     fn parse_update_message(&self, update: &serde_json::Value) -> Option<ChannelMessage> {
