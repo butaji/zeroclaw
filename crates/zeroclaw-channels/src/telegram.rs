@@ -3228,6 +3228,21 @@ Ensure only one `zeroclaw` process is using this bot token."
                             {
                                 tracing::warn!("answerCallbackQuery failed: {e}");
                             }
+                        } else {
+                            // Dismiss non-approval callbacks so the client
+                            // spinner doesn't hang.
+                            let answer_body = serde_json::json!({
+                                "callback_query_id": cb_id,
+                            });
+                            if let Err(e) = self
+                                .http_client()
+                                .post(self.api_url("answerCallbackQuery"))
+                                .json(&answer_body)
+                                .send()
+                                .await
+                            {
+                                tracing::warn!("answerCallbackQuery failed: {e}");
+                            }
                         }
 
                         continue; // callback_query is not a regular message
