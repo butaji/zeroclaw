@@ -2815,10 +2815,11 @@ impl Channel for TelegramChannel {
         }
 
         let resp = self
-            .client
-            .post(self.api_url("sendMessage"))
-            .json(&body)
-            .send()
+            .send_with_retry(
+                self.http_client()
+                    .post(self.api_url("sendMessage"))
+                    .json(&body),
+            )
             .await?;
 
         if !resp.status().is_success() {
@@ -3612,10 +3613,11 @@ Ensure only one `zeroclaw` process is using this bot token."
             .insert(approval_id.clone(), tx);
 
         let resp = self
-            .http_client()
-            .post(self.api_url("sendMessage"))
-            .json(&body)
-            .send()
+            .send_with_retry(
+                self.http_client()
+                    .post(self.api_url("sendMessage"))
+                    .json(&body),
+            )
             .await;
 
         match resp {
@@ -3628,7 +3630,7 @@ Ensure only one `zeroclaw` process is using this bot token."
             }
             Err(e) => {
                 self.pending_approvals.lock().await.remove(&approval_id);
-                return Err(e.into());
+                return Err(e);
             }
         }
 
