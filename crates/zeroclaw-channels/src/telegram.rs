@@ -1941,6 +1941,116 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         Ok(format!("data:image/jpeg;base64,{}", b64))
     }
 
+    /// Render inline Markdown markup (bold, italic, code, links,
+    /// strikethrough, spoiler, underline) to Telegram HTML.
+    fn render_inline_markup(line: &str) -> String {
+        let mut out = String::new();
+        let bytes = line.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+        while i < len {
+            // Bold: **text** or __text__
+            if i + 1 < len
+                && bytes[i] == b'*'
+                && bytes[i + 1] == b'*'
+                && let Some(end) = line[i + 2..].find("**")
+            {
+                let inner = Self::escape_html(&line[i + 2..i + 2 + end]);
+                let _ = write!(out, "<b>{inner}</b>");
+                i += 4 + end;
+                continue;
+            }
+            if i + 1 < len
+                && bytes[i] == b'_'
+                && bytes[i + 1] == b'_'
+                && let Some(end) = line[i + 2..].find("__")
+            {
+                let inner = Self::escape_html(&line[i + 2..i + 2 + end]);
+                let _ = write!(out, "<b>{inner}</b>");
+                i += 4 + end;
+                continue;
+            }
+            // Spoiler: ||text||
+            if i + 1 < len
+                && bytes[i] == b'|'
+                && bytes[i + 1] == b'|'
+                && let Some(end) = line[i + 2..].find("||")
+            {
+                let inner = Self::escape_html(&line[i + 2..i + 2 + end]);
+                let _ = write!(out, "<tg-spoiler>{inner}</tg-spoiler>");
+                i += 4 + end;
+                continue;
+            }
+            // Underline via HTML passthrough: if the LLM emits <u> tags,
+            // pass them through since Telegram supports them.
+            // (No standard markdown syntax for underline, so only HTML passthrough)
+            // Strikethrough: ~~text~~
+            if i + 1 < len
+                && bytes[i] == b'~'
+                && bytes[i + 1] == b'~'
+                && let Some(end) = line[i + 2..].find("~~")
+            {
+                let inner = Self::escape_html(&line[i + 2..i + 2 + end]);
+                let _ = write!(out, "<s>{inner}</s>");
+                i += 4 + end;
+                continue;
+            }
+            // Italic: *text* or _text_ (single)
+            if bytes[i] == b'*'
+                && (i == 0 || bytes[i - 1] != b'*')
+                && let Some(end) = line[i + 1..].find('*')
+                && end > 0
+            {
+                let inner = Self::escape_html(&line[i + 1..i + 1 + end]);
+                let _ = write!(out, "<i>{inner}</i>");
+                i += 2 + end;
+                continue;
+            }
+            // Inline code: `code`
+            if bytes[i] == b'`'
+                && (i == 0 || bytes[i - 1] != b'`')
+                && let Some(end) = line[i + 1..].find('`')
+            {
+                let inner = Self::escape_html(&line[i + 1..i + 1 + end]);
+                let _ = write!(out, "<code>{inner}</code>");
+                i += 2 + end;
+                continue;
+            }
+            // Markdown link: [text](url)
+            if bytes[i] == b'['
+                && let Some(bracket_end) = line[i + 1..].find(']')
+            {
+                let text_part = &line[i + 1..i + 1 + bracket_end];
+                let after_bracket = i + 1 + bracket_end + 1;
+                if after_bracket < len
+                    && bytes[after_bracket] == b'('
+                    && let Some(paren_end) = line[after_bracket + 1..].find(')')
+                {
+                    let url = &line[after_bracket + 1..after_bracket + 1 + paren_end];
+                    if url.starts_with("http://") || url.starts_with("https://") {
+                        let text_html = Self::escape_html(text_part);
+                        let url_html = Self::escape_html(url);
+                        let _ = write!(out, "<a href=\"{url_html}\">{text_html}</a>");
+                        i = after_bracket + 1 + paren_end + 1;
+                        continue;
+                    }
+                }
+            }
+            // Default: escape HTML entities
+            let ch = line[i..].chars().next().unwrap();
+            match ch {
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '&' => out.push_str("&amp;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&#39;"),
+                _ => out.push(ch),
+            }
+            i += ch.len_utf8();
+        }
+        out
+    }
+
     /// Convert Markdown to Telegram HTML format.
     /// Telegram HTML supports: <b>, <i>, <u>, <s>, <code>, <pre>, <a href="...">
     /// This mirrors OpenClaw's markdownToTelegramHtml approach.
@@ -1957,9 +2067,6 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 continue;
             }
 
-            let mut line_out = String::new();
-
-            // Handle code blocks (``` ... ```) - handled at text level below
             // Handle headers: ## Title → <b>Title</b>
             let stripped = line.trim_start_matches('#');
             let header_level = line.len() - stripped.len();
@@ -1969,96 +2076,15 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 continue;
             }
 
-            // Inline formatting
-            let mut i = 0;
-            let bytes = line.as_bytes();
-            let len = bytes.len();
-            while i < len {
-                // Bold: **text** or __text__
-                if i + 1 < len
-                    && bytes[i] == b'*'
-                    && bytes[i + 1] == b'*'
-                    && let Some(end) = line[i + 2..].find("**")
-                {
-                    let inner = Self::escape_html(&line[i + 2..i + 2 + end]);
-                    let _ = write!(line_out, "<b>{inner}</b>");
-                    i += 4 + end;
-                    continue;
-                }
-                if i + 1 < len
-                    && bytes[i] == b'_'
-                    && bytes[i + 1] == b'_'
-                    && let Some(end) = line[i + 2..].find("__")
-                {
-                    let inner = Self::escape_html(&line[i + 2..i + 2 + end]);
-                    let _ = write!(line_out, "<b>{inner}</b>");
-                    i += 4 + end;
-                    continue;
-                }
-                // Italic: *text* or _text_ (single)
-                if bytes[i] == b'*'
-                    && (i == 0 || bytes[i - 1] != b'*')
-                    && let Some(end) = line[i + 1..].find('*')
-                    && end > 0
-                {
-                    let inner = Self::escape_html(&line[i + 1..i + 1 + end]);
-                    let _ = write!(line_out, "<i>{inner}</i>");
-                    i += 2 + end;
-                    continue;
-                }
-                // Inline code: `code`
-                if bytes[i] == b'`'
-                    && (i == 0 || bytes[i - 1] != b'`')
-                    && let Some(end) = line[i + 1..].find('`')
-                {
-                    let inner = Self::escape_html(&line[i + 1..i + 1 + end]);
-                    let _ = write!(line_out, "<code>{inner}</code>");
-                    i += 2 + end;
-                    continue;
-                }
-                // Markdown link: [text](url)
-                if bytes[i] == b'['
-                    && let Some(bracket_end) = line[i + 1..].find(']')
-                {
-                    let text_part = &line[i + 1..i + 1 + bracket_end];
-                    let after_bracket = i + 1 + bracket_end + 1; // position after ']'
-                    if after_bracket < len
-                        && bytes[after_bracket] == b'('
-                        && let Some(paren_end) = line[after_bracket + 1..].find(')')
-                    {
-                        let url = &line[after_bracket + 1..after_bracket + 1 + paren_end];
-                        if url.starts_with("http://") || url.starts_with("https://") {
-                            let text_html = Self::escape_html(text_part);
-                            let url_html = Self::escape_html(url);
-                            let _ = write!(line_out, "<a href=\"{url_html}\">{text_html}</a>");
-                            i = after_bracket + 1 + paren_end + 1;
-                            continue;
-                        }
-                    }
-                }
-                // Strikethrough: ~~text~~
-                if i + 1 < len
-                    && bytes[i] == b'~'
-                    && bytes[i + 1] == b'~'
-                    && let Some(end) = line[i + 2..].find("~~")
-                {
-                    let inner = Self::escape_html(&line[i + 2..i + 2 + end]);
-                    let _ = write!(line_out, "<s>{inner}</s>");
-                    i += 4 + end;
-                    continue;
-                }
-                // Default: escape HTML entities
-                let ch = line[i..].chars().next().unwrap();
-                match ch {
-                    '<' => line_out.push_str("&lt;"),
-                    '>' => line_out.push_str("&gt;"),
-                    '&' => line_out.push_str("&amp;"),
-                    '"' => line_out.push_str("&quot;"),
-                    '\'' => line_out.push_str("&#39;"),
-                    _ => line_out.push(ch),
-                }
-                i += ch.len_utf8();
+            // Handle blockquotes: > text → <blockquote>text</blockquote>
+            if trimmed_line.starts_with("> ") {
+                let quote_content = Self::render_inline_markup(&trimmed_line[2..]);
+                result_lines.push(format!("<blockquote>{quote_content}</blockquote>"));
+                continue;
             }
+
+            // Inline formatting
+            let line_out = Self::render_inline_markup(line);
             result_lines.push(line_out);
         }
 
@@ -3788,6 +3814,24 @@ mod tests {
         assert_eq!(rendered, "<pre><code>let x = 1;</code></pre>");
         assert!(!rendered.contains("language-"));
         assert!(!rendered.contains("onclick"));
+    }
+
+    #[test]
+    fn telegram_markdown_to_html_spoiler() {
+        let rendered = TelegramChannel::markdown_to_telegram_html("this is ||hidden|| text");
+        assert_eq!(rendered, "this is <tg-spoiler>hidden</tg-spoiler> text");
+    }
+
+    #[test]
+    fn telegram_markdown_to_html_blockquote() {
+        let rendered = TelegramChannel::markdown_to_telegram_html("> quoted text");
+        assert_eq!(rendered, "<blockquote>quoted text</blockquote>");
+    }
+
+    #[test]
+    fn telegram_markdown_to_html_blockquote_with_formatting() {
+        let rendered = TelegramChannel::markdown_to_telegram_html("> say **bold** things");
+        assert_eq!(rendered, "<blockquote>say <b>bold</b> things</blockquote>");
     }
 
     #[test]
