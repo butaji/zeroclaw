@@ -231,7 +231,7 @@ fn format_attachment_content(
     local_path: &Path,
 ) -> String {
     match kind {
-        IncomingAttachmentKind::Photo | IncomingAttachmentKind::Document
+        IncomingAttachmentKind::Photo | IncomingAttachmentKind::Document | IncomingAttachmentKind::Sticker
             if is_image_extension(local_path) =>
         {
             format!("[IMAGE:{}]", local_path.display())
@@ -6036,6 +6036,18 @@ mod tests {
         assert_eq!(content, "[Audio: song.mp3] /tmp/workspace/song.mp3");
         assert!(!content.contains("[IMAGE:"));
         assert!(!content.contains("[Document:"));
+    }
+
+    /// Sticker (webp) should route through IMAGE pipeline for vision analysis.
+    #[test]
+    fn attachment_sticker_webp_uses_image_marker() {
+        let local_path = std::path::Path::new("/tmp/workspace/🔥.webp");
+        let local_filename = "🔥.webp";
+
+        let content =
+            format_attachment_content(IncomingAttachmentKind::Sticker, local_filename, local_path);
+
+        assert!(content.starts_with("[IMAGE:"), "sticker webp should use [IMAGE:] marker, got: {content}");
     }
 
     /// Markdown files must never produce `[IMAGE:]` markers (issue #1274).
