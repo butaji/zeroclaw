@@ -811,6 +811,32 @@ impl TelegramChannel {
             .unwrap_or(false)
     }
 
+    /// Returns `true` when the update should be silently skipped because
+    /// `mention_only` is active, the message comes from a group chat, and
+    /// the bot is neither @mentioned nor replied-to.
+    fn should_ignore_for_mention_only(&self, update: &serde_json::Value) -> bool {
+        if !self.mention_only {
+            return false;
+        }
+        let Some(message) = update.get("message") else {
+            return false;
+        };
+        if !Self::is_group_message(message) {
+            return false;
+        }
+        let guard = self.bot_username.lock();
+        let Some(bot_username) = guard.as_ref() else {
+            return true; // no username resolved yet → skip to be safe
+        };
+        let text = message
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| message.get("caption").and_then(serde_json::Value::as_str))
+            .unwrap_or("");
+        !Self::contains_bot_mention(text, bot_username)
+            && !Self::is_reply_to_bot_message(message, bot_username)
+    }
+
     fn is_user_allowed(&self, username: &str) -> bool {
         let identity = Self::normalize_identity(username);
         self.allowed_users
@@ -1111,6 +1137,8 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             return None;
         }
 
+        let is_group = Self::is_group_message(message);
+
         let chat_id = message
             .get("chat")
             .and_then(|chat| chat.get("id"))
@@ -1122,11 +1150,13 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             .and_then(serde_json::Value::as_i64)
             .unwrap_or(0);
 
+        // Extract thread/topic ID for forum support
         let thread_id = message
             .get("message_thread_id")
             .and_then(serde_json::Value::as_i64)
             .map(|id| id.to_string());
 
+        // reply_target: chat_id or chat_id:thread_id format
         let reply_target = if let Some(ref tid) = thread_id {
             format!("{}:{}", chat_id, tid)
         } else {
@@ -1187,7 +1217,20 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             && !caption.is_empty()
         {
             use std::fmt::Write;
-            let _ = write!(content, "\n\n{caption}");
+            let caption_text = if self.mention_only && is_group {
+                let guard = self.bot_username.lock();
+                if let Some(ref bot_name) = *guard {
+                    Self::normalize_incoming_content(caption, bot_name)
+                        .unwrap_or_else(|| caption.clone())
+                } else {
+                    caption.clone()
+                }
+            } else {
+                caption.clone()
+            };
+            if !caption_text.is_empty() {
+                let _ = write!(content, "\n\n{caption_text}");
+            }
         }
 
         // Prepend reply context if replying to another message
@@ -3034,6 +3077,13 @@ Ensure only one `zeroclaw` process is using this bot token."
                         continue; // callback_query is not a regular message
                     }
 
+                    // Gate: when mention_only is active, skip group messages
+                    // that neither @mention the bot nor reply to it. This
+                    // covers text, voice, and attachment paths uniformly.
+                    if self.should_ignore_for_mention_only(update) {
+                        continue;
+                    }
+
                     let msg = if let Some(m) = self.parse_update_message(update) {
                         m
                     } else if let Some(m) = self.try_parse_voice_message(update).await {
@@ -4433,6 +4483,200 @@ mod tests {
         });
 
         assert!(ch.parse_update_message(&update).is_none());
+    }
+
+    // ── should_ignore_for_mention_only gate tests ──
+
+    #[test]
+    fn should_ignore_for_mention_only_returns_false_when_disabled() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], false);
+        let update = serde_json::json!({
+            "message": {
+                "text": "hello",
+                "from": { "id": 555, "username": "alice" },
+                "chat": { "id": -100, "type": "group" }
+            }
+        });
+        assert!(!ch.should_ignore_for_mention_only(&update));
+    }
+
+    #[test]
+    fn should_ignore_for_mention_only_returns_false_in_dm() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], true);
+        {
+            let mut cache = ch.bot_username.lock();
+            *cache = Some("mybot".to_string());
+        }
+        let update = serde_json::json!({
+            "message": {
+                "text": "hello",
+                "from": { "id": 555, "username": "alice" },
+                "chat": { "id": 555, "type": "private" }
+            }
+        });
+        assert!(!ch.should_ignore_for_mention_only(&update));
+    }
+
+    #[test]
+    fn should_ignore_for_mention_only_ignores_group_without_mention() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], true);
+        {
+            let mut cache = ch.bot_username.lock();
+            *cache = Some("mybot".to_string());
+        }
+        let update = serde_json::json!({
+            "message": {
+                "text": "hello world",
+                "from": { "id": 555, "username": "alice" },
+                "chat": { "id": -100, "type": "group" }
+            }
+        });
+        assert!(ch.should_ignore_for_mention_only(&update));
+    }
+
+    #[test]
+    fn should_ignore_for_mention_only_allows_group_with_mention() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], true);
+        {
+            let mut cache = ch.bot_username.lock();
+            *cache = Some("mybot".to_string());
+        }
+        let update = serde_json::json!({
+            "message": {
+                "text": "hello @mybot",
+                "from": { "id": 555, "username": "alice" },
+                "chat": { "id": -100, "type": "group" }
+            }
+        });
+        assert!(!ch.should_ignore_for_mention_only(&update));
+    }
+
+    #[test]
+    fn should_ignore_for_mention_only_allows_reply_to_bot() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], true);
+        {
+            let mut cache = ch.bot_username.lock();
+            *cache = Some("mybot".to_string());
+        }
+        let update = serde_json::json!({
+            "message": {
+                "text": "follow up",
+                "from": { "id": 555, "username": "alice" },
+                "chat": { "id": -100, "type": "group" },
+                "reply_to_message": {
+                    "message_id": 1,
+                    "from": { "id": 999, "username": "mybot" },
+                    "text": "bot reply"
+                }
+            }
+        });
+        assert!(!ch.should_ignore_for_mention_only(&update));
+    }
+
+    #[test]
+    fn should_ignore_for_mention_only_ignores_non_text_group_message() {
+        // Voice/attachment messages have no "text" field — must still be
+        // gated when there is no @mention.
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], true);
+        {
+            let mut cache = ch.bot_username.lock();
+            *cache = Some("mybot".to_string());
+        }
+        let update = serde_json::json!({
+            "message": {
+                "voice": { "file_id": "abc123", "duration": 5 },
+                "from": { "id": 555, "username": "alice" },
+                "chat": { "id": -100, "type": "group" }
+            }
+        });
+        assert!(ch.should_ignore_for_mention_only(&update));
+    }
+
+    #[test]
+    fn should_ignore_for_mention_only_allows_non_text_with_reply_to_bot() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], true);
+        {
+            let mut cache = ch.bot_username.lock();
+            *cache = Some("mybot".to_string());
+        }
+        let update = serde_json::json!({
+            "message": {
+                "voice": { "file_id": "abc123", "duration": 5 },
+                "from": { "id": 555, "username": "alice" },
+                "chat": { "id": -100, "type": "group" },
+                "reply_to_message": {
+                    "message_id": 1,
+                    "from": { "id": 999, "username": "mybot" },
+                    "text": "bot reply"
+                }
+            }
+        });
+        assert!(!ch.should_ignore_for_mention_only(&update));
+    }
+
+    #[test]
+    fn should_ignore_for_mention_only_skips_when_no_username_resolved() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], true);
+        // bot_username is None — should skip to be safe
+        let update = serde_json::json!({
+            "message": {
+                "text": "hello @mybot",
+                "from": { "id": 555, "username": "alice" },
+                "chat": { "id": -100, "type": "group" }
+            }
+        });
+        assert!(ch.should_ignore_for_mention_only(&update));
+    }
+
+    #[test]
+    fn should_ignore_for_mention_only_allows_attachment_with_caption_mention() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], true);
+        {
+            let mut cache = ch.bot_username.lock();
+            *cache = Some("mybot".to_string());
+        }
+        let update = serde_json::json!({
+            "message": {
+                "document": { "file_id": "abc", "file_name": "report.pdf" },
+                "caption": "hey @mybot review this",
+                "from": { "id": 555, "username": "alice" },
+                "chat": { "id": -100, "type": "group" }
+            }
+        });
+        assert!(!ch.should_ignore_for_mention_only(&update));
+    }
+
+    #[test]
+    fn should_ignore_for_mention_only_ignores_attachment_without_caption_mention() {
+        let ch = TelegramChannel::new("token".into(), vec!["*".into()], true);
+        {
+            let mut cache = ch.bot_username.lock();
+            *cache = Some("mybot".to_string());
+        }
+        let update = serde_json::json!({
+            "message": {
+                "document": { "file_id": "abc", "file_name": "report.pdf" },
+                "caption": "here is the report",
+                "from": { "id": 555, "username": "alice" },
+                "chat": { "id": -100, "type": "group" }
+            }
+        });
+        assert!(ch.should_ignore_for_mention_only(&update));
+    }
+
+    #[test]
+    fn normalize_incoming_content_strips_mention_from_caption_text() {
+        // Verify caption-style text gets @mention stripped the same as regular text
+        let result =
+            TelegramChannel::normalize_incoming_content("@mybot review this file", "mybot");
+        assert_eq!(result, Some("review this file".to_string()));
+    }
+
+    #[test]
+    fn normalize_incoming_content_returns_none_when_only_mention() {
+        // Caption that is just "@mybot" should be stripped to empty → None
+        let result = TelegramChannel::normalize_incoming_content("@mybot", "mybot");
+        assert_eq!(result, None);
     }
 
     #[test]
