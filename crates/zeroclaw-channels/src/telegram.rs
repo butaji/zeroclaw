@@ -2267,6 +2267,9 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 body["message_thread_id"] = serde_json::Value::String(tid.to_string());
             }
 
+            // Disable link previews to keep bot responses clean
+            body["link_preview_options"] = serde_json::json!({ "is_disabled": true });
+
             let html_resp = self
                 .http_client()
                 .post(self.api_url("sendMessage"))
@@ -2297,6 +2300,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             if let Some(tid) = thread_id {
                 plain_body["message_thread_id"] = serde_json::Value::String(tid.to_string());
             }
+            plain_body["link_preview_options"] = serde_json::json!({ "is_disabled": true });
             let plain_resp = self
                 .http_client()
                 .post(self.api_url("sendMessage"))
@@ -2897,6 +2901,7 @@ impl Channel for TelegramChannel {
         if let Some(tid) = thread_id {
             body["message_thread_id"] = serde_json::Value::String(tid.to_string());
         }
+        body["link_preview_options"] = serde_json::json!({ "is_disabled": true });
 
         let resp = self
             .send_with_retry(
@@ -2966,6 +2971,7 @@ impl Channel for TelegramChannel {
             "chat_id": chat_id,
             "message_id": message_id_parsed,
             "text": display_text,
+            "link_preview_options": { "is_disabled": true },
         });
 
         let resp = self
@@ -3686,6 +3692,7 @@ Ensure only one `zeroclaw` process is using this bot token."
             "text": text,
             "parse_mode": "HTML",
             "reply_markup": reply_markup,
+            "link_preview_options": { "is_disabled": true },
         });
 
         // Register the oneshot BEFORE sending the message to avoid a race
