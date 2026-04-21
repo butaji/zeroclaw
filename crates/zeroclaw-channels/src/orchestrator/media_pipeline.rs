@@ -17,6 +17,8 @@ use zeroclaw_config::schema::{MediaPipelineConfig, TranscriptionConfig};
 // Re-export media types from zeroclaw-types for backwards compatibility.
 pub use zeroclaw_api::media::{MediaAttachment, MediaKind};
 
+const IMAGE_MARKER_PREFIX: &str = "[IMAGE:";
+
 /// The media understanding pipeline.
 ///
 /// Consumes a message's text and attachments, returning enriched text with
@@ -45,12 +47,17 @@ impl<'a> MediaPipeline<'a> {
     /// Process a message's attachments and return enriched text.
     ///
     /// If the pipeline is disabled via config, returns `original_text` unchanged.
+    ///
+    /// When vision is unavailable and image attachments are present, raw
+    /// `[IMAGE:]` markers are stripped from the text to prevent text-only
+    /// providers from throwing `provider_capability_error`.
     pub async fn process(&self, original_text: &str, attachments: &[MediaAttachment]) -> String {
         if !self.config.enabled || attachments.is_empty() {
             return original_text.to_string();
         }
 
         let mut annotations = Vec::new();
+        let mut has_images = false;
 
         for attachment in attachments {
             match attachment.kind() {
@@ -61,6 +68,7 @@ impl<'a> MediaPipeline<'a> {
                 MediaKind::Image if self.config.describe_images => {
                     let annotation = self.process_image(attachment);
                     annotations.push(annotation);
+                    has_images = true;
                 }
                 MediaKind::Video if self.config.summarize_video => {
                     let annotation = self.process_video(attachment);
@@ -74,8 +82,16 @@ impl<'a> MediaPipeline<'a> {
             return original_text.to_string();
         }
 
+        // When vision is unavailable and we processed images, strip raw [IMAGE:]
+        // markers from the text so text-only providers don't error on them.
+        let text_for_output = if !self.vision_available && has_images {
+            strip_image_markers(original_text)
+        } else {
+            original_text.to_string()
+        };
+
         let mut enriched = String::with_capacity(
-            annotations.iter().map(|a| a.len() + 1).sum::<usize>() + original_text.len() + 2,
+            annotations.iter().map(|a| a.len() + 1).sum::<usize>() + text_for_output.len() + 2,
         );
 
         for annotation in &annotations {
@@ -83,9 +99,9 @@ impl<'a> MediaPipeline<'a> {
             enriched.push('\n');
         }
 
-        if !original_text.is_empty() {
+        if !text_for_output.is_empty() {
             enriched.push('\n');
-            enriched.push_str(original_text);
+            enriched.push_str(&text_for_output);
         }
 
         enriched.trim().to_string()
@@ -147,6 +163,33 @@ impl<'a> MediaPipeline<'a> {
     fn process_video(&self, attachment: &MediaAttachment) -> String {
         format!("[Video: {} attached]", attachment.file_name)
     }
+}
+
+/// Strip all `[IMAGE:...]` markers from text.
+///
+/// Used when vision is unavailable so text-only providers don't try to
+/// process image references they can't handle.
+fn strip_image_markers(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+
+    while let Some(rel_start) = text[cursor..].find(IMAGE_MARKER_PREFIX) {
+        let start = cursor + rel_start;
+        result.push_str(&text[cursor..start]);
+
+        let marker_start = start + IMAGE_MARKER_PREFIX.len();
+        if let Some(rel_end) = text[marker_start..].find(']') {
+            let end = marker_start + rel_end;
+            cursor = end + 1;
+        } else {
+            // No closing bracket found, consume rest of text as-is.
+            result.push_str(&text[start..]);
+            return result;
+        }
+    }
+
+    result.push_str(&text[cursor..]);
+    result
 }
 
 #[cfg(test)]
@@ -355,5 +398,98 @@ mod tests {
         let attachments = vec![sample_audio(), sample_image(), sample_video()];
         let result = pipeline.process("hello", &attachments).await;
         assert_eq!(result, "hello");
+    }
+
+    // ── [IMAGE:] marker stripping when vision unavailable ──────────────────────
+
+    /// When vision is unavailable, raw `[IMAGE:/path]` markers in the text must
+    /// be stripped so text-only providers don't throw provider_capability_error.
+    /// The placeholder annotation is prepended instead.
+    #[tokio::test]
+    async fn image_marker_stripped_when_vision_unavailable() {
+        let config = default_pipeline_config(true);
+        let tc = TranscriptionConfig::default();
+        let pipeline = MediaPipeline::new(&config, &tc, false);
+
+        // Simulate text that already has [IMAGE:/path] marker (as Telegram would insert).
+        let result = pipeline
+            .process(
+                "Look at this [IMAGE:/tmp/workspace/photo_99_1.jpg] and tell me what you see",
+                &[sample_image()],
+            )
+            .await;
+
+        // Raw [IMAGE:] marker must NOT appear in output.
+        assert!(
+            !result.contains("[IMAGE:"),
+            "raw [IMAGE:] marker should be stripped, got: {result}"
+        );
+        // Placeholder annotation should be present.
+        assert!(
+            result.contains("[Image: photo.jpg attached]"),
+            "expected placeholder annotation, got: {result}"
+        );
+        // Original text content (minus the marker) should be preserved.
+        assert!(
+            result.contains("Look at this"),
+            "original text context should be preserved, got: {result}"
+        );
+        assert!(
+            result.contains("tell me what you see"),
+            "original text trailing content should be preserved, got: {result}"
+        );
+    }
+
+    /// When vision is available, raw `[IMAGE:/path]` markers must be preserved
+    /// so the vision pipeline can actually process them.
+    #[tokio::test]
+    async fn image_marker_preserved_when_vision_available() {
+        let config = default_pipeline_config(true);
+        let tc = TranscriptionConfig::default();
+        let pipeline = MediaPipeline::new(&config, &tc, true);
+
+        let result = pipeline
+            .process(
+                "Look at [IMAGE:/tmp/workspace/photo_99_1.jpg]",
+                &[sample_image()],
+            )
+            .await;
+
+        // Raw marker must be preserved when vision is available.
+        assert!(
+            result.contains("[IMAGE:/tmp/workspace/photo_99_1.jpg]"),
+            "raw [IMAGE:] marker should be preserved when vision available, got: {result}"
+        );
+        // Vision-specific annotation should be present.
+        assert!(
+            result.contains("will be processed by vision model"),
+            "expected vision annotation, got: {result}"
+        );
+    }
+
+    /// Multiple `[IMAGE:]` markers in text are all stripped when vision unavailable.
+    #[tokio::test]
+    async fn multiple_image_markers_stripped_when_vision_unavailable() {
+        let config = default_pipeline_config(true);
+        let tc = TranscriptionConfig::default();
+        let pipeline = MediaPipeline::new(&config, &tc, false);
+
+        let attachments = vec![sample_image(), sample_image()];
+        let result = pipeline
+            .process(
+                "First [IMAGE:/tmp/a.png] then [IMAGE:/tmp/b.jpg] done",
+                &attachments,
+            )
+            .await;
+
+        assert!(
+            !result.contains("[IMAGE:"),
+            "no [IMAGE:] markers should remain, got: {result}"
+        );
+        // Both images should have annotations.
+        assert!(
+            result.contains("[Image: photo.jpg attached]"),
+            "expected image annotations, got: {result}"
+        );
     }
 }
