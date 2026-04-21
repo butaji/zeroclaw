@@ -120,6 +120,22 @@ impl SessionStore {
         Ok(true)
     }
 
+    /// Rename a session file (e.g., when Telegram group migrates to supergroup).
+    /// Returns `true` if the session was renamed successfully.
+    pub fn rename_session(&self, old_key: &str, new_key: &str) -> std::io::Result<bool> {
+        let old_path = self.session_path(old_key);
+        if !old_path.exists() {
+            return Ok(false);
+        }
+        let new_path = self.session_path(new_key);
+        if new_path.exists() {
+            // Don't overwrite existing session
+            return Ok(false);
+        }
+        std::fs::rename(&old_path, &new_path)?;
+        Ok(true)
+    }
+
     /// Return the modification time of a session's JSONL file.
     pub fn session_mtime(&self, session_key: &str) -> Option<std::time::SystemTime> {
         std::fs::metadata(self.session_path(session_key))
@@ -167,6 +183,10 @@ impl SessionBackend for SessionStore {
 
     fn delete_session(&self, session_key: &str) -> std::io::Result<bool> {
         self.delete_session(session_key)
+    }
+
+    fn rename_session(&self, old_key: &str, new_key: &str) -> std::io::Result<bool> {
+        self.rename_session(old_key, new_key)
     }
 }
 
@@ -397,5 +417,65 @@ mod tests {
         assert_eq!(meta.key, "test_session");
         assert_eq!(meta.message_count, 2);
         assert!(meta.name.is_none());
+    }
+
+    // ── rename_session tests ───────────────────────────────────────
+
+    #[test]
+    fn rename_session_moves_jsonl_file() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path()).unwrap();
+
+        store
+            .append("old_key", &ChatMessage::user("hello"))
+            .unwrap();
+        assert_eq!(store.load("old_key").len(), 1);
+
+        let renamed = store.rename_session("old_key", "new_key").unwrap();
+        assert!(renamed);
+        assert!(store.load("old_key").is_empty());
+        assert_eq!(store.load("new_key").len(), 1);
+        assert_eq!(store.load("new_key")[0].content, "hello");
+    }
+
+    #[test]
+    fn rename_session_nonexistent_returns_false() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path()).unwrap();
+
+        let renamed = store.rename_session("nonexistent", "new_key").unwrap();
+        assert!(!renamed);
+    }
+
+    #[test]
+    fn rename_session_overwrites_existing_returns_false() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path()).unwrap();
+
+        store.append("key_a", &ChatMessage::user("hello")).unwrap();
+        store.append("key_b", &ChatMessage::user("world")).unwrap();
+
+        let renamed = store.rename_session("key_a", "key_b").unwrap();
+        assert!(!renamed);
+        assert_eq!(store.load("key_a").len(), 1);
+        assert_eq!(store.load("key_b").len(), 1);
+    }
+
+    #[test]
+    fn rename_session_via_trait() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path()).unwrap();
+        let backend: &dyn SessionBackend = &store;
+
+        backend
+            .append("old_session", &ChatMessage::user("test"))
+            .unwrap();
+
+        let renamed = backend
+            .rename_session("old_session", "new_session")
+            .unwrap();
+        assert!(renamed);
+        assert!(backend.load("old_session").is_empty());
+        assert_eq!(backend.load("new_session").len(), 1);
     }
 }

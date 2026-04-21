@@ -99,6 +99,12 @@ pub trait SessionBackend: Send + Sync {
         Ok(false)
     }
 
+    /// Rename a session (e.g., when Telegram group migrates to supergroup).
+    /// Returns `true` if the session was renamed successfully.
+    fn rename_session(&self, _old_key: &str, _new_key: &str) -> std::io::Result<bool> {
+        Ok(false)
+    }
+
     /// Set or update the human-readable name for a session.
     fn set_session_name(&self, _session_key: &str, _name: &str) -> std::io::Result<()> {
         Ok(())

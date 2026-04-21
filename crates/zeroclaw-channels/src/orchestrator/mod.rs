@@ -66,7 +66,7 @@ pub use crate::link_enricher;
 #[cfg(feature = "channel-matrix")]
 pub use crate::matrix::MatrixChannel;
 #[cfg(feature = "channel-telegram")]
-pub use crate::telegram::TelegramChannel;
+pub use crate::telegram::{MigratedChatId, TelegramChannel};
 #[cfg(feature = "whatsapp-web")]
 pub use crate::whatsapp_web::WhatsAppWebChannel;
 pub use zeroclaw_infra::debounce::MessageDebouncer;
@@ -438,6 +438,66 @@ pub fn conversation_history_key(msg: &zeroclaw_api::channel::ChannelMessage) -> 
             msg.channel, msg.reply_target, tid, msg.sender
         ),
         None => format!("{}_{}_{}", msg.channel, msg.reply_target, msg.sender),
+    }
+}
+
+/// Migrate conversation history from one chat_id to another (e.g., Telegram supergroup migration).
+/// Renames the session in the session store if it exists.
+fn migrate_conversation_history(
+    ctx: &ChannelRuntimeContext,
+    old_chat_id: &str,
+    new_chat_id: &str,
+    channel: &str,
+    sender: &str,
+    thread_ts: Option<&str>,
+) {
+    // Build old and new history keys
+    let old_key = match thread_ts {
+        Some(tid) => format!("{}_{}_{}_{}", channel, old_chat_id, tid, sender),
+        None => format!("{}_{}_{}", channel, old_chat_id, sender),
+    };
+    let new_key = match thread_ts {
+        Some(tid) => format!("{}_{}_{}_{}", channel, new_chat_id, tid, sender),
+        None => format!("{}_{}_{}", channel, new_chat_id, sender),
+    };
+
+    // Rename in session store if available
+    if let Some(ref store) = ctx.session_store {
+        if let Err(e) = store.rename_session(&old_key, &new_key) {
+            tracing::warn!(
+                old_key = %old_key,
+                new_key = %new_key,
+                error = %e,
+                "Failed to rename session during chat migration"
+            );
+        } else {
+            tracing::info!(
+                old_key = %old_key,
+                new_key = %new_key,
+                "Conversation history migrated to new chat_id"
+            );
+        }
+    }
+
+    // Update in-memory conversation histories cache
+    {
+        let mut histories = ctx
+            .conversation_histories
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(old_messages) = histories.pop(&old_key) {
+            // Only insert new key if it doesn't already exist
+            if !histories.contains(&new_key) {
+                histories.put(new_key.clone(), old_messages);
+                tracing::debug!(
+                    old_key = %old_key,
+                    new_key = %new_key,
+                    "In-memory conversation history migrated"
+                );
+            } else {
+                tracing::warn!("Skipping in-memory history migration: new key already exists");
+            }
+        }
     }
 }
 
@@ -3471,7 +3531,38 @@ async fn process_channel_message(
                     )
                     .await
                 {
-                    eprintln!("  ❌ Failed to reply on {}: {e}", channel.name());
+                    // Check for Telegram supergroup migration
+                    #[cfg(feature = "channel-telegram")]
+                    if let Some(migrated) = e.downcast_ref::<MigratedChatId>() {
+                        let old_chat_id = msg.reply_target.clone();
+                        let new_chat_id = migrated.0.to_string();
+                        tracing::warn!(
+                            old_chat_id = %old_chat_id,
+                            new_chat_id = %new_chat_id,
+                            "Telegram supergroup migration detected, migrating conversation history"
+                        );
+                        migrate_conversation_history(
+                            ctx.as_ref(),
+                            &old_chat_id,
+                            &new_chat_id,
+                            &msg.channel,
+                            &msg.sender,
+                            msg.thread_ts.as_deref(),
+                        );
+                        // Retry with new chat_id
+                        let _ = channel
+                            .send(
+                                &SendMessage::new(&delivered_response, &new_chat_id)
+                                    .in_thread(msg.thread_ts.clone())
+                                    .with_cancellation(cancellation_token.clone())
+                                    .with_reply_to(&msg.id),
+                            )
+                            .await;
+                    }
+                    #[cfg(not(feature = "channel-telegram"))]
+                    {
+                        eprintln!("  ❌ Failed to reply on {}: {e}", channel.name());
+                    }
                 }
             }
         }
