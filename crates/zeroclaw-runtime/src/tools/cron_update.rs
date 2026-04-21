@@ -87,7 +87,7 @@ impl Tool for CronUpdateTool {
                         },
                         "model": {
                             "type": "string",
-                            "description": "Model override for agent jobs, e.g. 'x-ai/grok-4-1-fast'"
+                            "description": "Model override for agent jobs. Only set this if the user explicitly asked for a specific model. Otherwise leave it unset so the job uses the app's configured default model."
                         },
                         "allowed_tools": {
                             "type": "array",
