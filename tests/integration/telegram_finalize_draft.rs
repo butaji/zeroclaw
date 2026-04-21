@@ -43,7 +43,9 @@ async fn finalize_draft_treats_not_modified_as_success() {
         .await;
 
     let channel = test_channel(&server.uri());
-    let result = channel.finalize_draft("123", "42", "final text").await;
+    let result = channel
+        .finalize_draft("123", "42", "final text", None)
+        .await;
 
     assert!(
         result.is_ok(),
@@ -94,7 +96,9 @@ async fn finalize_draft_plain_retry_treats_not_modified_as_success() {
         .await;
 
     let channel = test_channel(&server.uri());
-    let result = channel.finalize_draft("123", "42", "Use **bold**").await;
+    let result = channel
+        .finalize_draft("123", "42", "Use **bold**", None)
+        .await;
 
     assert!(
         result.is_ok(),
@@ -135,7 +139,9 @@ async fn finalize_draft_skips_send_message_when_delete_fails() {
         .await;
 
     let channel = test_channel(&server.uri());
-    let result = channel.finalize_draft("123", "42", "final text").await;
+    let result = channel
+        .finalize_draft("123", "42", "final text", None)
+        .await;
 
     assert!(
         result.is_ok(),
@@ -186,7 +192,9 @@ async fn finalize_draft_sends_fresh_message_after_successful_delete() {
         .await;
 
     let channel = test_channel(&server.uri());
-    let result = channel.finalize_draft("123", "42", "final text").await;
+    let result = channel
+        .finalize_draft("123", "42", "final text", None)
+        .await;
 
     assert!(
         result.is_ok(),
@@ -204,5 +212,279 @@ async fn finalize_draft_sends_fresh_message_after_successful_delete() {
             .count(),
         1,
         "sendMessage should be attempted exactly once after delete succeeds"
+    );
+}
+
+/// Test that reply_parameters is preserved in the delete+resend fallback
+/// when finalize_draft has a valid reply_to_message_id.
+#[tokio::test]
+async fn finalize_draft_preserves_reply_parameters_on_delete_resend() {
+    let server = MockServer::start().await;
+
+    // Both edit attempts fail → delete → send fallback
+    Mock::given(method("POST"))
+        .and(path("/botTEST_TOKEN/editMessageText"))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(telegram_error_response(
+                "Bad Request: message cannot be edited",
+            )),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/botTEST_TOKEN/deleteMessage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(telegram_ok_response(42)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/botTEST_TOKEN/sendMessage"))
+        .and(body_partial_json(json!({
+            "chat_id": "123",
+            "reply_parameters": { "message_id": 99 },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(telegram_ok_response(43)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let channel = test_channel(&server.uri());
+    // "telegram_123_99" should extract native message_id 99
+    let result = channel
+        .finalize_draft("123", "42", "final text", Some("telegram_123_99"))
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "finalize_draft should succeed, got: {result:?}"
+    );
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("requests should be captured");
+
+    // Find the sendMessage request and verify reply_parameters
+    let send_req = requests
+        .iter()
+        .find(|req| req.url.path() == "/botTEST_TOKEN/sendMessage")
+        .expect("sendMessage should have been called");
+
+    let body: serde_json::Value = send_req
+        .body_json()
+        .expect("sendMessage body should be JSON");
+
+    let reply_params = body
+        .get("reply_parameters")
+        .expect("reply_parameters should be present");
+    assert_eq!(
+        reply_params.get("message_id").and_then(|v| v.as_i64()),
+        Some(99),
+        "reply_parameters.message_id should be 99"
+    );
+}
+
+/// Test that reply_parameters is preserved when resending due to oversized text
+/// (no valid draft message_id but reply_to is provided).
+#[tokio::test]
+async fn finalize_draft_preserves_reply_on_oversized_fallback() {
+    let server = MockServer::start().await;
+
+    // Oversized text + invalid draft message_id → chunked send fallback.
+    // Mock any POST to sendMessage; we'll verify reply_parameters in the actual request.
+    Mock::given(method("POST"))
+        .and(path("/botTEST_TOKEN/sendMessage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(telegram_ok_response(44)))
+        .mount(&server)
+        .await;
+
+    let channel = test_channel(&server.uri());
+    // 4200 "a" chars → chunked into 2 sends (first: 4066, second: 134)
+    let long_text = "a".repeat(4200);
+
+    let result = channel
+        .finalize_draft("123", "not-a-number", &long_text, Some("telegram_123_55"))
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "finalize_draft with oversized text should succeed, got: {result:?}"
+    );
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("requests should be captured");
+
+    let send_reqs: Vec<_> = requests
+        .iter()
+        .filter(|req| req.url.path() == "/botTEST_TOKEN/sendMessage")
+        .collect();
+
+    assert!(
+        !send_reqs.is_empty(),
+        "sendMessage should have been called at least once"
+    );
+
+    // Verify the FIRST sendMessage has reply_parameters
+    let body: serde_json::Value = send_reqs[0]
+        .body_json()
+        .expect("sendMessage body should be JSON");
+
+    let reply_params = body
+        .get("reply_parameters")
+        .expect("reply_parameters should be present");
+    assert_eq!(
+        reply_params.get("message_id").and_then(|v| v.as_i64()),
+        Some(55),
+        "reply_parameters.message_id should be 55"
+    );
+}
+
+// ── Attachment + reply_parameters tests ────────────────────────────────────────
+
+/// Test that finalize_draft with an image attachment and reply_to_message_id
+/// sends sendPhoto with reply_parameters set correctly.
+#[tokio::test]
+async fn finalize_draft_attachment_sends_photo_with_reply_parameters() {
+    let server = MockServer::start().await;
+
+    // deleteMessage succeeds
+    Mock::given(method("POST"))
+        .and(path("/botTEST_TOKEN/deleteMessage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(telegram_ok_response(42)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // sendMessage (text portion) succeeds
+    Mock::given(method("POST"))
+        .and(path("/botTEST_TOKEN/sendMessage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(telegram_ok_response(43)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // sendPhoto must carry reply_parameters
+    Mock::given(method("POST"))
+        .and(path("/botTEST_TOKEN/sendPhoto"))
+        .and(body_partial_json(json!({
+            "chat_id": "123",
+            "reply_parameters": { "message_id": 77 },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "result": {
+                "message_id": 44,
+                "chat": {"id": 123},
+                "photo": {"file_id": "abc"}
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let channel = test_channel(&server.uri());
+    let result = channel
+        .finalize_draft(
+            "123",
+            "42",
+            "Look at this [IMAGE:https://example.com/img.jpg]",
+            Some("telegram_123_77"),
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "finalize_draft with attachment should succeed, got: {result:?}"
+    );
+
+    let requests = server.received_requests().await.expect("requests captured");
+    let photo_req = requests
+        .iter()
+        .find(|r| r.url.path() == "/botTEST_TOKEN/sendPhoto")
+        .expect("sendPhoto should have been called");
+
+    let body: serde_json::Value = photo_req.body_json().expect("body should be JSON");
+    let reply_params = body
+        .get("reply_parameters")
+        .expect("reply_parameters must be present");
+    assert_eq!(
+        reply_params.get("message_id").and_then(|v| v.as_i64()),
+        Some(77),
+        "reply_parameters.message_id should be 77"
+    );
+}
+
+/// Test that finalize_draft with a document attachment and reply_to_message_id
+/// sends sendDocument with reply_parameters set correctly.
+#[tokio::test]
+async fn finalize_draft_attachment_sends_document_with_reply_parameters() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/botTEST_TOKEN/deleteMessage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(telegram_ok_response(42)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/botTEST_TOKEN/sendMessage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(telegram_ok_response(43)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/botTEST_TOKEN/sendDocument"))
+        .and(body_partial_json(json!({
+            "chat_id": "123",
+            "reply_parameters": { "message_id": 88 },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "result": {
+                "message_id": 45,
+                "chat": {"id": 123},
+                "document": {"file_id": "doc123"}
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let channel = test_channel(&server.uri());
+    let result = channel
+        .finalize_draft(
+            "123",
+            "42",
+            "Here is the file [DOCUMENT:https://example.com/file.pdf]",
+            Some("telegram_123_88"),
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "finalize_draft with document attachment should succeed, got: {result:?}"
+    );
+
+    let requests = server.received_requests().await.expect("requests captured");
+    let doc_req = requests
+        .iter()
+        .find(|r| r.url.path() == "/botTEST_TOKEN/sendDocument")
+        .expect("sendDocument should have been called");
+
+    let body: serde_json::Value = doc_req.body_json().expect("body should be JSON");
+    let reply_params = body
+        .get("reply_parameters")
+        .expect("reply_parameters must be present");
+    assert_eq!(
+        reply_params.get("message_id").and_then(|v| v.as_i64()),
+        Some(88),
+        "reply_parameters.message_id should be 88"
     );
 }
