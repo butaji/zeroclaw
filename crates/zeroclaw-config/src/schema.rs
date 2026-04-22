@@ -1646,6 +1646,13 @@ pub struct PacingConfig {
     /// escalation (Warning). Defaults to 3.
     #[serde(default = "default_loop_detection_max_repeats")]
     pub loop_detection_max_repeats: usize,
+
+    /// Minimum same-tool same-result calls with different arguments before
+    /// the no-progress detector triggers. Defaults to 5. Raise this for
+    /// workflows where the agent legitimately retries a tool with varying
+    /// arguments (e.g. frame extraction from video).
+    #[serde(default = "default_loop_detection_no_progress_threshold")]
+    pub loop_detection_no_progress_threshold: usize,
 }
 
 fn default_loop_detection_enabled() -> bool {
@@ -1660,6 +1667,10 @@ fn default_loop_detection_max_repeats() -> usize {
     3
 }
 
+fn default_loop_detection_no_progress_threshold() -> usize {
+    5
+}
+
 impl Default for PacingConfig {
     fn default() -> Self {
         Self {
@@ -1670,6 +1681,7 @@ impl Default for PacingConfig {
             loop_detection_enabled: default_loop_detection_enabled(),
             loop_detection_window_size: default_loop_detection_window_size(),
             loop_detection_max_repeats: default_loop_detection_max_repeats(),
+            loop_detection_no_progress_threshold: default_loop_detection_no_progress_threshold(),
         }
     }
 }

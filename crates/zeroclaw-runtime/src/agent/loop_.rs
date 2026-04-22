@@ -868,6 +868,7 @@ pub async fn run_tool_call_loop(
             enabled: pacing.loop_detection_enabled,
             window_size: pacing.loop_detection_window_size,
             max_repeats: pacing.loop_detection_max_repeats,
+            no_progress_threshold: pacing.loop_detection_no_progress_threshold,
         },
     );
 

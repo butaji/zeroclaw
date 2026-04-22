@@ -26,6 +26,10 @@ pub struct LoopDetectorConfig {
     pub window_size: usize,
     /// How many consecutive exact-repeat calls before escalation starts.
     pub max_repeats: usize,
+    /// Minimum same-tool same-result calls before the no-progress detector
+    /// triggers. Higher values give the agent more room to explore different
+    /// arguments. Defaults to 5.
+    pub no_progress_threshold: usize,
 }
 
 impl Default for LoopDetectorConfig {
@@ -34,6 +38,7 @@ impl Default for LoopDetectorConfig {
             enabled: true,
             window_size: 20,
             max_repeats: 3,
+            no_progress_threshold: 5,
         }
     }
 }
@@ -268,9 +273,9 @@ impl LoopDetector {
     /// Pattern 3: Same tool called 5+ times (with different args each time)
     /// but producing the exact same result hash every time.
     fn detect_no_progress(&self) -> Option<LoopDetectionResult> {
-        const MIN_CALLS: usize = 5;
+        let min_calls = self.config.no_progress_threshold;
 
-        if self.window.len() < MIN_CALLS {
+        if self.window.len() < min_calls {
             return None;
         }
 
@@ -283,7 +288,7 @@ impl LoopDetector {
             .collect();
 
         let count = same_tool_same_result.len();
-        if count < MIN_CALLS {
+        if count < min_calls {
             return None;
         }
 
@@ -295,12 +300,12 @@ impl LoopDetector {
             return None;
         }
 
-        if count >= MIN_CALLS + 2 {
+        if count >= min_calls + 2 {
             Some(LoopDetectionResult::Break(format!(
                 "Circuit breaker: tool '{}' called {} times with different arguments but identical results — no progress",
                 last.name, count
             )))
-        } else if count > MIN_CALLS {
+        } else if count > min_calls {
             Some(LoopDetectionResult::Block(format!(
                 "Blocked: tool '{}' called {} times with different arguments but identical results",
                 last.name, count
@@ -329,6 +334,7 @@ mod tests {
             enabled: true,
             window_size: 20,
             max_repeats,
+            no_progress_threshold: 5,
         }
     }
 
@@ -558,6 +564,36 @@ mod tests {
     // ── Disabled / config tests ──────────────────────────────────
 
     #[test]
+    fn no_progress_custom_threshold_delays_detection() {
+        let config = LoopDetectorConfig {
+            enabled: true,
+            window_size: 20,
+            max_repeats: 3,
+            no_progress_threshold: 8,
+        };
+        let mut det = LoopDetector::new(config);
+
+        // 7 calls: below custom threshold of 8, all should be Ok.
+        for i in 0..7 {
+            let args = json!({"q": format!("v{i}")});
+            assert_eq!(
+                det.record("shell", &args, "error"),
+                LoopDetectionResult::Ok,
+                "iteration {i} should be Ok with threshold=8"
+            );
+        }
+
+        // 8th call: hits threshold -> Warning.
+        match det.record("shell", &json!({"q": "v7"}), "error") {
+            LoopDetectionResult::Warning(msg) => {
+                assert!(msg.contains("shell"));
+                assert!(msg.contains("identical results"));
+            }
+            other => panic!("expected Warning at threshold=8, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn disabled_detector_always_returns_ok() {
         let config = LoopDetectorConfig {
             enabled: false,
@@ -577,6 +613,7 @@ mod tests {
             enabled: true,
             window_size: 5,
             max_repeats: 3,
+            no_progress_threshold: 5,
         };
         let mut det = LoopDetector::new(config);
         let args = json!({"x": 1});
@@ -628,6 +665,7 @@ mod tests {
             enabled: true,
             window_size: 6,
             max_repeats: 3,
+            no_progress_threshold: 5,
         };
         let mut det = LoopDetector::new(config);
         let args = json!({"x": 1});
