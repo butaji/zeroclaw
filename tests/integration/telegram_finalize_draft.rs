@@ -44,7 +44,7 @@ async fn finalize_draft_treats_not_modified_as_success() {
 
     let channel = test_channel(&server.uri());
     let result = channel
-        .finalize_draft("123", "42", "final text", None)
+        .finalize_draft("123", "42", "final text")
         .await;
 
     assert!(
@@ -97,7 +97,7 @@ async fn finalize_draft_plain_retry_treats_not_modified_as_success() {
 
     let channel = test_channel(&server.uri());
     let result = channel
-        .finalize_draft("123", "42", "Use **bold**", None)
+        .finalize_draft("123", "42", "Use **bold**")
         .await;
 
     assert!(
@@ -140,7 +140,7 @@ async fn finalize_draft_skips_send_message_when_delete_fails() {
 
     let channel = test_channel(&server.uri());
     let result = channel
-        .finalize_draft("123", "42", "final text", None)
+        .finalize_draft("123", "42", "final text")
         .await;
 
     assert!(
@@ -193,7 +193,7 @@ async fn finalize_draft_sends_fresh_message_after_successful_delete() {
 
     let channel = test_channel(&server.uri());
     let result = channel
-        .finalize_draft("123", "42", "final text", None)
+        .finalize_draft("123", "42", "final text")
         .await;
 
     assert!(
@@ -215,10 +215,9 @@ async fn finalize_draft_sends_fresh_message_after_successful_delete() {
     );
 }
 
-/// Test that reply_parameters is preserved in the delete+resend fallback
-/// when finalize_draft has a valid reply_to_message_id.
+/// Test that finalize_draft falls back to sendMessage after delete when edit fails.
 #[tokio::test]
-async fn finalize_draft_preserves_reply_parameters_on_delete_resend() {
+async fn finalize_draft_delete_resend_routes_correctly() {
     let server = MockServer::start().await;
 
     // Both edit attempts fail → delete → send fallback
@@ -244,7 +243,6 @@ async fn finalize_draft_preserves_reply_parameters_on_delete_resend() {
         .and(path("/botTEST_TOKEN/sendMessage"))
         .and(body_partial_json(json!({
             "chat_id": "123",
-            "reply_parameters": { "message_id": 99 },
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(telegram_ok_response(43)))
         .expect(1)
@@ -252,14 +250,13 @@ async fn finalize_draft_preserves_reply_parameters_on_delete_resend() {
         .await;
 
     let channel = test_channel(&server.uri());
-    // "telegram_123_99" should extract native message_id 99
     let result = channel
-        .finalize_draft("123", "42", "final text", Some("telegram_123_99"))
+        .finalize_draft("123", "42", "final text")
         .await;
 
     assert!(
         result.is_ok(),
-        "finalize_draft should succeed, got: {result:?}"
+        "finalize_draft should succeed after delete fallback, got: {result:?}"
     );
 
     let requests = server
@@ -267,7 +264,6 @@ async fn finalize_draft_preserves_reply_parameters_on_delete_resend() {
         .await
         .expect("requests should be captured");
 
-    // Find the sendMessage request and verify reply_parameters
     let send_req = requests
         .iter()
         .find(|req| req.url.path() == "/botTEST_TOKEN/sendMessage")
@@ -277,24 +273,19 @@ async fn finalize_draft_preserves_reply_parameters_on_delete_resend() {
         .body_json()
         .expect("sendMessage body should be JSON");
 
-    let reply_params = body
-        .get("reply_parameters")
-        .expect("reply_parameters should be present");
     assert_eq!(
-        reply_params.get("message_id").and_then(|v| v.as_i64()),
-        Some(99),
-        "reply_parameters.message_id should be 99"
+        body.get("chat_id").and_then(|v| v.as_str()),
+        Some("123"),
+        "sendMessage should be called with correct chat_id"
     );
 }
 
-/// Test that reply_parameters is preserved when resending due to oversized text
-/// (no valid draft message_id but reply_to is provided).
+/// Test that finalize_draft with oversized text falls back to chunked send.
 #[tokio::test]
-async fn finalize_draft_preserves_reply_on_oversized_fallback() {
+async fn finalize_draft_oversized_fallback_routes_correctly() {
     let server = MockServer::start().await;
 
     // Oversized text + invalid draft message_id → chunked send fallback.
-    // Mock any POST to sendMessage; we'll verify reply_parameters in the actual request.
     Mock::given(method("POST"))
         .and(path("/botTEST_TOKEN/sendMessage"))
         .respond_with(ResponseTemplate::new(200).set_body_json(telegram_ok_response(44)))
@@ -306,7 +297,7 @@ async fn finalize_draft_preserves_reply_on_oversized_fallback() {
     let long_text = "a".repeat(4200);
 
     let result = channel
-        .finalize_draft("123", "not-a-number", &long_text, Some("telegram_123_55"))
+        .finalize_draft("123", "not-a-number", &long_text)
         .await;
 
     assert!(
@@ -329,27 +320,23 @@ async fn finalize_draft_preserves_reply_on_oversized_fallback() {
         "sendMessage should have been called at least once"
     );
 
-    // Verify the FIRST sendMessage has reply_parameters
+    // Verify the FIRST sendMessage has correct chat_id
     let body: serde_json::Value = send_reqs[0]
         .body_json()
         .expect("sendMessage body should be JSON");
 
-    let reply_params = body
-        .get("reply_parameters")
-        .expect("reply_parameters should be present");
     assert_eq!(
-        reply_params.get("message_id").and_then(|v| v.as_i64()),
-        Some(55),
-        "reply_parameters.message_id should be 55"
+        body.get("chat_id").and_then(|v| v.as_str()),
+        Some("123"),
+        "sendMessage should be called with correct chat_id"
     );
 }
 
 // ── Attachment + reply_parameters tests ────────────────────────────────────────
 
-/// Test that finalize_draft with an image attachment and reply_to_message_id
-/// sends sendPhoto with reply_parameters set correctly.
+/// Test that finalize_draft with an image attachment routes to sendPhoto.
 #[tokio::test]
-async fn finalize_draft_attachment_sends_photo_with_reply_parameters() {
+async fn finalize_draft_attachment_sends_photo() {
     let server = MockServer::start().await;
 
     // deleteMessage succeeds
@@ -368,12 +355,11 @@ async fn finalize_draft_attachment_sends_photo_with_reply_parameters() {
         .mount(&server)
         .await;
 
-    // sendPhoto must carry reply_parameters
+    // sendPhoto is called
     Mock::given(method("POST"))
         .and(path("/botTEST_TOKEN/sendPhoto"))
         .and(body_partial_json(json!({
             "chat_id": "123",
-            "reply_parameters": { "message_id": 77 },
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true,
@@ -393,7 +379,6 @@ async fn finalize_draft_attachment_sends_photo_with_reply_parameters() {
             "123",
             "42",
             "Look at this [IMAGE:https://example.com/img.jpg]",
-            Some("telegram_123_77"),
         )
         .await;
 
@@ -409,20 +394,16 @@ async fn finalize_draft_attachment_sends_photo_with_reply_parameters() {
         .expect("sendPhoto should have been called");
 
     let body: serde_json::Value = photo_req.body_json().expect("body should be JSON");
-    let reply_params = body
-        .get("reply_parameters")
-        .expect("reply_parameters must be present");
     assert_eq!(
-        reply_params.get("message_id").and_then(|v| v.as_i64()),
-        Some(77),
-        "reply_parameters.message_id should be 77"
+        body.get("chat_id").and_then(|v| v.as_str()),
+        Some("123"),
+        "sendPhoto should be called with correct chat_id"
     );
 }
 
-/// Test that finalize_draft with a document attachment and reply_to_message_id
-/// sends sendDocument with reply_parameters set correctly.
+/// Test that finalize_draft with a document attachment routes to sendDocument.
 #[tokio::test]
-async fn finalize_draft_attachment_sends_document_with_reply_parameters() {
+async fn finalize_draft_attachment_sends_document() {
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
@@ -443,7 +424,6 @@ async fn finalize_draft_attachment_sends_document_with_reply_parameters() {
         .and(path("/botTEST_TOKEN/sendDocument"))
         .and(body_partial_json(json!({
             "chat_id": "123",
-            "reply_parameters": { "message_id": 88 },
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true,
@@ -463,7 +443,6 @@ async fn finalize_draft_attachment_sends_document_with_reply_parameters() {
             "123",
             "42",
             "Here is the file [DOCUMENT:https://example.com/file.pdf]",
-            Some("telegram_123_88"),
         )
         .await;
 
@@ -479,12 +458,9 @@ async fn finalize_draft_attachment_sends_document_with_reply_parameters() {
         .expect("sendDocument should have been called");
 
     let body: serde_json::Value = doc_req.body_json().expect("body should be JSON");
-    let reply_params = body
-        .get("reply_parameters")
-        .expect("reply_parameters must be present");
     assert_eq!(
-        reply_params.get("message_id").and_then(|v| v.as_i64()),
-        Some(88),
-        "reply_parameters.message_id should be 88"
+        body.get("chat_id").and_then(|v| v.as_str()),
+        Some("123"),
+        "sendDocument should be called with correct chat_id"
     );
 }

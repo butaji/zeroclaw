@@ -62,6 +62,8 @@ pub struct SendMessage {
     /// File attachments to send with the message.
     /// Channels that don't support attachments ignore this field.
     pub attachments: Vec<MediaAttachment>,
+    /// Optional message ID to reply to (e.g. Telegram `reply_to_message_id`).
+    pub reply_to: Option<String>,
 }
 
 impl SendMessage {
@@ -74,6 +76,7 @@ impl SendMessage {
             thread_ts: None,
             cancellation_token: None,
             attachments: vec![],
+            reply_to: None,
         }
     }
 
@@ -90,6 +93,7 @@ impl SendMessage {
             thread_ts: None,
             cancellation_token: None,
             attachments: vec![],
+            reply_to: None,
         }
     }
 
@@ -108,6 +112,12 @@ impl SendMessage {
     /// Attach files to this message.
     pub fn with_attachments(mut self, attachments: Vec<MediaAttachment>) -> Self {
         self.attachments = attachments;
+        self
+    }
+
+    /// Set the message ID to reply to (e.g. Telegram `reply_to_message_id`).
+    pub fn with_reply_to(mut self, reply_to: impl Into<String>) -> Self {
+        self.reply_to = Some(reply_to.into());
         self
     }
 }

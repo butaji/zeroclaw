@@ -420,6 +420,18 @@ enum EditMessageResult {
     Failed(reqwest::StatusCode),
 }
 
+/// Error returned when Telegram indicates the chat has been migrated to a new supergroup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MigratedChatId(pub i64);
+
+impl std::fmt::Display for MigratedChatId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "chat migrated to {}", self.0)
+    }
+}
+
+impl std::error::Error for MigratedChatId {}
+
 impl TelegramChannel {
     pub fn new(bot_token: String, allowed_users: Vec<String>, mention_only: bool) -> Self {
         let normalized_allowed = Self::normalize_allowed_users(allowed_users);
@@ -682,6 +694,60 @@ impl TelegramChannel {
 
     fn api_url(&self, method: &str) -> String {
         format!("{}/bot{}/{method}", self.api_base, self.bot_token)
+    }
+
+    /// Send a request with retry on 429 rate-limit, detecting chat migrations.
+    async fn send_with_retry(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> anyhow::Result<reqwest::Response> {
+        let mut attempt = 0;
+        const MAX_RETRIES: u32 = 5;
+
+        loop {
+            let req = match request.try_clone() {
+                Some(r) => r,
+                None => anyhow::bail!("request body cannot be cloned for retry"),
+            };
+            let resp = req.send().await?;
+
+            if resp.status().as_u16() == 429 {
+                attempt += 1;
+                if attempt >= MAX_RETRIES {
+                    anyhow::bail!("Telegram API rate limit (429) after {} attempts", MAX_RETRIES);
+                }
+                let retry_after = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(1);
+                tracing::debug!(
+                    "Telegram rate limited (429), retrying in {retry_after}s (attempt {}/{})",
+                    attempt,
+                    MAX_RETRIES
+                );
+                tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                continue;
+            }
+
+            // Check for chat migration (bot was kicked and supergroup was created)
+            let status = resp.status();
+            if !status.is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                if let Some(migrated) = body
+                    .find("migrate_to_chat_id")
+                    .and_then(|idx| body[idx..].split_once(':'))
+                    .and_then(|(_, rest)| rest.split_once(','))
+                    .and_then(|(val, _)| val.trim().parse::<i64>().ok())
+                {
+                    return Err(MigratedChatId(migrated).into());
+                }
+                anyhow::bail!("Telegram API error {status}: {body}");
+            }
+
+            return Ok(resp);
+        }
     }
 
     /// Register the bot's slash commands with Telegram via `setMyCommands`.
