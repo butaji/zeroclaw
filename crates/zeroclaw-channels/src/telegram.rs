@@ -231,7 +231,9 @@ fn format_attachment_content(
     local_path: &Path,
 ) -> String {
     match kind {
-        IncomingAttachmentKind::Photo | IncomingAttachmentKind::Document | IncomingAttachmentKind::Sticker
+        IncomingAttachmentKind::Photo
+        | IncomingAttachmentKind::Document
+        | IncomingAttachmentKind::Sticker
             if is_image_extension(local_path) =>
         {
             format!("[IMAGE:{}]", local_path.display())
@@ -714,7 +716,10 @@ impl TelegramChannel {
             if resp.status().as_u16() == 429 {
                 attempt += 1;
                 if attempt >= MAX_RETRIES {
-                    anyhow::bail!("Telegram API rate limit (429) after {} attempts", MAX_RETRIES);
+                    anyhow::bail!(
+                        "Telegram API rate limit (429) after {} attempts",
+                        MAX_RETRIES
+                    );
                 }
                 let retry_after = resp
                     .headers()
@@ -1262,10 +1267,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             return Ok(data);
         }
 
-        let url = format!(
-            "{}/file/bot{}/{file_path}",
-            self.api_base, self.bot_token
-        );
+        let url = format!("{}/file/bot{}/{file_path}", self.api_base, self.bot_token);
         let resp = self
             .http_client()
             .get(&url)
@@ -6131,7 +6133,10 @@ mod tests {
         let content =
             format_attachment_content(IncomingAttachmentKind::Sticker, local_filename, local_path);
 
-        assert!(content.starts_with("[IMAGE:"), "sticker webp should use [IMAGE:] marker, got: {content}");
+        assert!(
+            content.starts_with("[IMAGE:"),
+            "sticker webp should use [IMAGE:] marker, got: {content}"
+        );
     }
 
     /// Markdown files must never produce `[IMAGE:]` markers (issue #1274).

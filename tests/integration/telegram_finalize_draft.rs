@@ -43,9 +43,7 @@ async fn finalize_draft_treats_not_modified_as_success() {
         .await;
 
     let channel = test_channel(&server.uri());
-    let result = channel
-        .finalize_draft("123", "42", "final text")
-        .await;
+    let result = channel.finalize_draft("123", "42", "final text").await;
 
     assert!(
         result.is_ok(),
@@ -96,9 +94,7 @@ async fn finalize_draft_plain_retry_treats_not_modified_as_success() {
         .await;
 
     let channel = test_channel(&server.uri());
-    let result = channel
-        .finalize_draft("123", "42", "Use **bold**")
-        .await;
+    let result = channel.finalize_draft("123", "42", "Use **bold**").await;
 
     assert!(
         result.is_ok(),
@@ -139,9 +135,7 @@ async fn finalize_draft_skips_send_message_when_delete_fails() {
         .await;
 
     let channel = test_channel(&server.uri());
-    let result = channel
-        .finalize_draft("123", "42", "final text")
-        .await;
+    let result = channel.finalize_draft("123", "42", "final text").await;
 
     assert!(
         result.is_ok(),
@@ -192,9 +186,7 @@ async fn finalize_draft_sends_fresh_message_after_successful_delete() {
         .await;
 
     let channel = test_channel(&server.uri());
-    let result = channel
-        .finalize_draft("123", "42", "final text")
-        .await;
+    let result = channel.finalize_draft("123", "42", "final text").await;
 
     assert!(
         result.is_ok(),
@@ -250,9 +242,7 @@ async fn finalize_draft_delete_resend_routes_correctly() {
         .await;
 
     let channel = test_channel(&server.uri());
-    let result = channel
-        .finalize_draft("123", "42", "final text")
-        .await;
+    let result = channel.finalize_draft("123", "42", "final text").await;
 
     assert!(
         result.is_ok(),

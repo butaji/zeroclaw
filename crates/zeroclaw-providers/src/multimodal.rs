@@ -134,8 +134,27 @@ pub fn count_image_markers(messages: &[ChatMessage]) -> usize {
     messages
         .iter()
         .filter(|m| m.role == "user")
-        .map(|m| parse_image_markers(&m.content).1.len())
+        .map(|m| {
+            let refs = parse_image_markers(&m.content).1;
+            refs.iter()
+                .filter(|r| is_loadable_image_reference_with_exists_check(r))
+                .count()
+        })
         .sum()
+}
+
+/// Like [`is_loadable_image_reference`] but also verifies local filesystem
+/// paths actually exist. Used by [`count_image_markers`] to avoid counting
+/// stale/nonexistent file markers as vision triggers.
+fn is_loadable_image_reference_with_exists_check(candidate: &str) -> bool {
+    if candidate.starts_with('/') {
+        // Local path: verify existence to avoid counting stale markers
+        // from logs, snippets, or typos.
+        Path::new(candidate).exists()
+    } else {
+        // http(s):// and data: URIs are inherently loadable by definition.
+        is_loadable_image_reference(candidate)
+    }
 }
 
 pub fn contains_image_markers(messages: &[ChatMessage]) -> bool {
@@ -931,5 +950,38 @@ mod tests {
             "expected empty string, got: {cleaned:?}"
         );
         assert_eq!(refs.len(), 1);
+    }
+
+    /// [`count_image_markers`] must not count markers whose path does not exist
+    /// on the filesystem. Text snippets like `[IMAGE:/definitely/nonexistent/path.jpg]`
+    /// in user messages must not trigger vision routing.
+    #[test]
+    fn count_image_markers_ignores_nonexistent_local_paths() {
+        let messages = vec![
+            ChatMessage::user("hello world".to_string()),
+            ChatMessage::user(
+                "check this [IMAGE:/definitely/nonexistent/path.jpg] out".to_string(),
+            ),
+            ChatMessage::user("just text no image".to_string()),
+        ];
+        // The nonexistent path is syntactically a valid image reference (starts
+        // with /) but the file does not exist, so it must NOT be counted.
+        assert_eq!(
+            count_image_markers(&messages),
+            0,
+            "nonexistent local path should not count as image marker"
+        );
+    }
+
+    /// Empty markers `[IMAGE:]` must not count as images (preserved for
+    /// existing tests that depend on this behavior).
+    #[test]
+    fn count_image_markers_ignores_empty_marker() {
+        let messages = vec![ChatMessage::user("test [IMAGE:] marker".to_string())];
+        assert_eq!(
+            count_image_markers(&messages),
+            0,
+            "empty image marker should not count"
+        );
     }
 }
